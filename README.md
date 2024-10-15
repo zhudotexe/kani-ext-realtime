@@ -1,6 +1,6 @@
 # kani-ext-realtime
 
-This repository adds the OpenAIRealtimeEngine.
+This repository adds the OpenAIRealtimeKani.
 
 This package is considered provisional and maintained on a best-effort basis. As such, it will not be released on
 PyPI.
