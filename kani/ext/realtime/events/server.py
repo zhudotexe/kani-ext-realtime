@@ -1,60 +1,16 @@
 from typing import Literal
 
-from pydantic import BaseModel
-
 from .base import ServerEvent as BaseEvent
-from .client import ConversationItem, ResponseConfig
+from ..models import (
+    ConversationDetails,
+    ConversationItem,
+    ErrorDetails,
+    RateLimitInfo,
+    RealtimeResponse,
+    SessionDetails,
+)
 
 
-# ===== models =====
-# ---- error ----
-class ErrorDetails(BaseModel):
-    type: str
-    code: str | None = None
-    message: str
-    param: str | None = None
-    event_id: str | None = None
-
-
-# ---- session.created ----
-# ---- session.updated ----
-class SessionDetails(ResponseConfig):
-    id: str
-    object: Literal["realtime.session"]
-
-
-# ---- conversation.created ----
-class ConversationDetails(ResponseConfig):
-    id: str
-    object: Literal["realtime.conversation"]
-
-
-# ---- response.created ----
-# ---- response.done ----
-class UsageDetails(BaseModel):
-    total_tokens: int
-    input_tokens: int
-    output_tokens: int
-
-
-class RealtimeResponse(BaseModel):
-    id: str
-    object: Literal["realtime.response"]
-    status: Literal["in_progress", "completed", "cancelled", "failed", "incomplete"]
-    status_details: dict | None
-    output: list[ConversationItem]
-    usage: UsageDetails | None
-
-
-# ---- rate_limits.updated ----
-class RateLimitInfo(BaseModel):
-    name: str
-    limit: int
-    remaining: int
-    reset_seconds: float
-
-
-# ===== events =====
 class Error(BaseEvent):
     type: Literal["error"] = "error"
     error: ErrorDetails
