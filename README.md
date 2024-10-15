@@ -1,42 +1,25 @@
-# kani Extension Template
+# kani-ext-realtime
 
-This repository contains a template for building kani extensions that use the `kani.ext.*` namespace.
+This repository adds the OpenAIRealtimeEngine.
 
-See https://packaging.python.org/en/latest/tutorials/packaging-projects/ for more information.
+This package is considered provisional and maintained on a best-effort basis. As such, it will not be released on
+PyPI.
 
-## Getting Started
+To install this package, you must install it using the git source:
 
-### Create Repo From Template
+```shell
+$ pip install git+https://github.com/zhudotexe/kani-ext-realtime.git@main
+```
 
-The first step is to create your own repo using this repo as a template!
+See https://platform.openai.com/docs/guides/realtime for more information on the OpenAI Realtime API.
 
-Follow the instructions
-at https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template
-in order to create your repo. We recommend naming your extension repo like `kani-ext-myextension`, but you are free to
-choose whatever name you like.
+## Usage
 
-### Choose License
+```python
+# TBD
+```
 
-An important next step is to choose your code's license. kani is licensed under the MIT license, which allows extension
-developers to license their own code with a license of their own choice.
-
-We (the kani developers) recommend making your extension available under the MIT license as well. You are, however, free
-to choose your own license: https://choosealicense.com/
-
-Once you've chosen a license, add it to your repository in a file named `LICENSE`.
-
-### Update Names
-
-Now that you've created your repo, the next step is to change the template names to your own package's names. The files
-you'll need to change are:
-
-- `pyproject.toml`: Set your package name and metadata
-- `kani/ext/my_extension`: Rename the `my_extension` directory to your own name
-- `.github/workflows/pythonpublish.yml` (optional): Set the environment variable to the right PyPI URL
-
-Finally, you can delete the contents of this README and replace them with your own! Write your code in the `kani/ext/*`
-package you renamed.
-
+<!--
 ## Publishing to PyPI
 
 To publish your package to PyPI, this repo comes with a GitHub Action that will automatically build and upload new
@@ -56,3 +39,4 @@ Once you've configured this, each release you publish on GitHub will automatical
 You can also manually trigger the workflow.
 
 Make sure to update the version number in `pyproject.toml` before releasing a new version!
+-->
