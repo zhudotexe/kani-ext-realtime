@@ -11,6 +11,11 @@ class BaseEvent(BaseModel, abc.ABC):
     type: str
 
 
+class ClientEvent(BaseEvent, abc.ABC):
+    # used for type-checking, mainly
+    pass
+
+
 class ServerEvent(BaseEvent, abc.ABC):
     # this class registers a list of subclasses that will be used later for deserialization
     # ==== serdes ====
@@ -31,14 +36,16 @@ class ServerEvent(BaseEvent, abc.ABC):
     # noinspection PyNestedDecorators
     @model_validator(mode="wrap")
     @classmethod
-    def _validate(cls, v, nxt):
+    def _validate(cls, v, nxt, info):
+        if info.context and info.context.get("routed"):
+            return nxt(v)
         if isinstance(v, dict) and "type" in v:
             event_type = v["type"]
             try:
                 klass = cls._server_event_registry[event_type]
             except KeyError:
                 return UnknownEvent(event_id=v["event_id"], type=event_type, data=v)
-            return klass.model_validate(v)
+            return klass.model_validate(v, context={"routed": True})
         return nxt(v)
 
 

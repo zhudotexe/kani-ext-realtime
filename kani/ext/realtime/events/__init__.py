@@ -1,4 +1,4 @@
-from .base import BaseEvent, ServerEvent
+from .base import BaseEvent, ClientEvent, ServerEvent
 from .client import (
     ConversationItemCreate,
     ConversationItemDelete,

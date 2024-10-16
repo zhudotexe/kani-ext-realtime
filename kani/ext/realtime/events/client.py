@@ -1,6 +1,6 @@
 from typing import Literal
 
-from .base import BaseEvent
+from .base import ClientEvent as BaseEvent
 from ..models import ConversationItem, ResponseConfig
 
 

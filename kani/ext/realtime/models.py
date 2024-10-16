@@ -4,13 +4,11 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from kani import AIFunction
-
 
 # ===== client =====
 # ---- session.update ----
 class AudioTranscriptionConfig(BaseModel):
-    enabled: bool = True
+    # enabled: bool = True
     model: str = "whisper-1"
 
 
@@ -29,14 +27,14 @@ class FunctionDefinition(BaseModel):
     description: str
     parameters: dict
 
-    @classmethod
-    def from_ai_function(cls, f: AIFunction):
-        return cls(name=f.name, description=f.desc, parameters=f.json_schema)
+    # @classmethod
+    # def from_ai_function(cls, f: AIFunction):
+    #     return cls(name=f.name, description=f.desc, parameters=f.json_schema)
 
 
 class ResponseConfig(BaseModel):
     modalities: list[str] = ["text", "audio"]
-    instructions: str | None = None
+    instructions: str = ""
     voice: Literal["alloy", "echo", "shimmer"] = "alloy"
     input_audio_format: Literal["pcm16", "g711_ulaw", "g711_alaw"] = "pcm16"
     output_audio_format: Literal["pcm16", "g711_ulaw", "g711_alaw"] = "pcm16"
@@ -45,17 +43,17 @@ class ResponseConfig(BaseModel):
     tools: list[FunctionDefinition] = []
     tool_choice: Literal["auto", "none", "required"] | str = "auto"
     temperature: float = 0.8
-    max_output_tokens: int | Literal["inf"] | None = "inf"
+    # max_output_tokens: int | Literal["inf"] | None = "inf"
 
 
 # ---- conversation.item.create ----
 class TextContentPart(BaseModel):
-    type: Literal["input_text", "text"]
+    type: Literal["input_text", "text"] = "input_text"
     text: str
 
 
 class AudioContentPart(BaseModel):
-    type: Literal["input_audio", "audio"]
+    type: Literal["input_audio", "audio"] = "input_audio"
     audio: str
     transcript: str
     # todo transcript_bytes
@@ -71,20 +69,20 @@ class ConversationItemBase(BaseModel, abc.ABC):
 
 
 class MessageConversationItem(ConversationItemBase):
-    type: Literal["message"]
+    type: Literal["message"] = "message"
     role: Literal["user", "assistant", "system"]
     content: list[ContentPart]
 
 
 class FunctionCallConversationItem(ConversationItemBase):
-    type: Literal["function_call"]
+    type: Literal["function_call"] = "function_call"
     call_id: str
     name: str
     arguments: str
 
 
 class FunctionCallOutputConversationItem(ConversationItemBase):
-    type: Literal["function_call_output"]
+    type: Literal["function_call_output"] = "function_call_output"
     output: str
 
 
@@ -112,7 +110,7 @@ class SessionDetails(ResponseConfig):
 
 
 # ---- conversation.created ----
-class ConversationDetails(ResponseConfig):
+class ConversationDetails(BaseModel):
     id: str
     object: Literal["realtime.conversation"]
 
