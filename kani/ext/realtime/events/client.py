@@ -1,13 +1,13 @@
 from typing import Literal
 
 from .base import ClientEvent as BaseEvent
-from ..models import ConversationItem, ResponseConfig
+from ..models import ConversationItem, ResponseConfig, SessionConfig
 
 
 # ===== events =====
 class SessionUpdate(BaseEvent):
     type: Literal["session.update"] = "session.update"
-    session: ResponseConfig
+    session: SessionConfig
 
 
 class InputAudioBufferAppend(BaseEvent):

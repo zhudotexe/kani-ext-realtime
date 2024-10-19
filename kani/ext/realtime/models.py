@@ -36,14 +36,17 @@ class ResponseConfig(BaseModel):
     modalities: list[str] = ["text", "audio"]
     instructions: str = ""
     voice: Literal["alloy", "echo", "shimmer"] = "alloy"
-    input_audio_format: Literal["pcm16", "g711_ulaw", "g711_alaw"] = "pcm16"
     output_audio_format: Literal["pcm16", "g711_ulaw", "g711_alaw"] = "pcm16"
-    input_audio_transcription: AudioTranscriptionConfig | None = AudioTranscriptionConfig()
-    turn_detection: TurnDetectionConfig | None = TurnDetectionConfig()
     tools: list[FunctionDefinition] = []
     tool_choice: Literal["auto", "none", "required"] | str = "auto"
     temperature: float = 0.8
     # max_output_tokens: int | Literal["inf"] | None = "inf"
+
+
+class SessionConfig(ResponseConfig):
+    input_audio_format: Literal["pcm16", "g711_ulaw", "g711_alaw"] = "pcm16"
+    input_audio_transcription: AudioTranscriptionConfig | None = AudioTranscriptionConfig()
+    turn_detection: TurnDetectionConfig | None = TurnDetectionConfig()
 
 
 # ---- conversation.item.create ----
@@ -54,7 +57,7 @@ class TextContentPart(BaseModel):
 
 class AudioContentPart(BaseModel):
     type: Literal["input_audio", "audio"] = "input_audio"
-    audio: str
+    audio: str | None = Field(default=None, repr=False)
     transcript: str
     # todo transcript_bytes
 
@@ -63,7 +66,7 @@ ContentPart = Annotated[TextContentPart | AudioContentPart, Field(discriminator=
 
 
 class ConversationItemBase(BaseModel, abc.ABC):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     type: str
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
@@ -104,7 +107,7 @@ class ErrorDetails(BaseModel):
 
 # ---- session.created ----
 # ---- session.updated ----
-class SessionDetails(ResponseConfig):
+class SessionDetails(SessionConfig):
     id: str
     object: Literal["realtime.session"]
 

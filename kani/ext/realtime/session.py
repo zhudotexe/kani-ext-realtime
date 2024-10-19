@@ -1,26 +1,25 @@
 import asyncio
 import logging
-import os
 import warnings
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, TypeVar
 
 import websockets
 from websockets.asyncio.client import ClientConnection, connect
 
 from ._internal import get_server_event_handlers, server_event_handler
-from .events import ClientEvent, ServerEvent, server as server_events, client as client_events
-from .models import ConversationItem, RealtimeResponse, ResponseConfig
+from .events import ClientEvent, ServerEvent, server as server_events
+from .models import ConversationItem, RealtimeResponse, ResponseConfig, SessionConfig
 
 log = logging.getLogger(__name__)
+ServerEventT = TypeVar("ServerEventT", bound=ServerEvent)
 
 
 class RealtimeSession:
     def __init__(
         self,
-        api_key: str = None,
+        api_key: str,
         model="gpt-4o-realtime-preview-2024-10-01",
         *,
-        session_config: ResponseConfig = None,
         ws_base: str = "wss://api.openai.com/v1/realtime",
         headers: dict = None,
         # organization: str = None,  # todo is this supported?
@@ -32,7 +31,6 @@ class RealtimeSession:
         :param api_key: Your OpenAI API key. By default, the API key will be read from the `OPENAI_API_KEY` environment
             variable.
         :param model: The id of the realtime model to use (e.g. "gpt-4o-realtime-preview-2024-10-01").
-
         :param ws_base: The base WebSocket URL to connect to.
         :param headers: A dict of HTTP headers to include with each request.
         :param client: An instance of ``httpx.AsyncClient`` (for reusing the same client in multiple engines).
@@ -40,13 +38,6 @@ class RealtimeSession:
             https://platform.openai.com/docs/api-reference/realtime-client-events/response/create for a full list of
             params. Specifically, these arguments will be passed as the ``response`` key.
         """
-        if session_config is None:
-            session_config = ResponseConfig()
-        if headers is None:
-            headers = {}
-        if api_key is None:
-            api_key = os.getenv("OPENAI_API_KEY")
-
         # default headers
         headers.setdefault("Authorization", f"Bearer {api_key}")
         headers.setdefault("OpenAI-Beta", "realtime=v1")
@@ -55,10 +46,10 @@ class RealtimeSession:
         self.ws_base = ws_base
         self.headers = headers
         self.model = model
-        self.session_config = session_config
         self.generation_args = generation_args
 
         # state
+        self.session_config: SessionConfig | None = None
         self.session_id: str | None = None
         self.conversation_id: str | None = None
         self.responses: dict[str, RealtimeResponse] = {}
@@ -79,8 +70,6 @@ class RealtimeSession:
         if self.ws_task is None:
             self.ws_task = asyncio.create_task(self._ws_task(), name="realtime-ws")
         await self._ws_connected.wait()
-        await self.send(client_events.SessionUpdate(session=self.session_config))
-        await self.wait_for("session.updated")
 
     async def close(self):
         if self.ws_task is not None:
@@ -107,13 +96,16 @@ class RealtimeSession:
         """Remove a listener added by :meth:`add_listener`."""
         self.listeners.remove(callback)
 
-    async def wait_for(self, event_type: str, timeout: int = 60) -> ServerEvent:
+    async def wait_for(
+        self, event_type: str, predicate: Callable[[ServerEventT], bool] = None, timeout: int = 60
+    ) -> ServerEventT:
         """Wait for the next event of a given type, and return it."""
         future = asyncio.get_running_loop().create_future()
 
         async def waiter(e: ServerEvent):
             if e.type == event_type:
-                future.set_result(e)
+                if predicate is None or predicate(e):
+                    future.set_result(e)
 
         try:
             self.add_listener(waiter)
@@ -157,7 +149,7 @@ class RealtimeSession:
 
         handler = self._server_event_handlers.get(event.type)
         if handler is None:
-            warnings.warn(f"A server event with type {event.type!r} is being unhandled: {event!r}")
+            # warnings.warn(f"A server event with type {event.type!r} is being unhandled: {event!r}")
             return
         await handler(event)
 
@@ -168,7 +160,7 @@ class RealtimeSession:
     @server_event_handler("session.created")
     async def _handle_session_created(self, event: server_events.SessionCreated):
         self.session_id = event.session.id
-        # self.session_config = event.session  # don't update it here since that will overwrite the user's req
+        self.session_config = event.session
 
     @server_event_handler("session.updated")
     async def _handle_session_updated(self, event: server_events.SessionUpdated):

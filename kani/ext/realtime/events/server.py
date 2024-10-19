@@ -1,5 +1,7 @@
 from typing import Literal
 
+from pydantic import Field
+
 from .base import ServerEvent as BaseEvent
 from ..models import (
     ConversationDetails,
@@ -108,13 +110,47 @@ class RateLimitsUpdated(BaseEvent):
 # TODO:
 # response.output_item.added
 # response.output_item.done
+class ResponseOutputItemDone(BaseEvent):
+    type: Literal["response.output_item.done"] = "response.output_item.done"
+    response_id: str
+    output_index: int
+    item: ConversationItem
+
+
 # response.content_part.added
 # response.content_part.done
 # response.text.delta
+class ResponseTextDelta(BaseEvent):
+    type: Literal["response.text.delta"] = "response.text.delta"
+    response_id: str
+    item_id: str
+    output_index: int
+    content_index: int
+    delta: str
+
+
 # response.text.done
 # response.audio_transcript.delta
+class ResponseAudioTranscriptDelta(BaseEvent):
+    type: Literal["response.audio_transcript.delta"] = "response.audio_transcript.delta"
+    response_id: str
+    item_id: str
+    output_index: int
+    content_index: int
+    delta: str
+
+
 # response.audio_transcript.done
 # response.audio.delta
+class ResponseAudioDelta(BaseEvent):
+    type: Literal["response.audio.delta"] = "response.audio.delta"
+    response_id: str
+    item_id: str
+    output_index: int
+    content_index: int
+    delta: str = Field(repr=False)
+
+
 # response.audio.done
 # response.function_call_arguments.delta
 # response.function_call_arguments.done
