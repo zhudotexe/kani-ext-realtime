@@ -1,6 +1,5 @@
 import base64
 import faulthandler
-import io
 
 from pydub import AudioSegment
 from pydub.playback import play

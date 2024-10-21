@@ -2,7 +2,7 @@
 
 import base64
 
-from kani import ChatMessage, ChatRole, FunctionCall, MessagePart, ToolCall
+from kani import AIFunction, ChatMessage, ChatRole, FunctionCall, MessagePart, ToolCall
 
 from .models import (
     AudioContentPart,
@@ -10,6 +10,7 @@ from .models import (
     ConversationItem,
     FunctionCallConversationItem,
     FunctionCallOutputConversationItem,
+    FunctionDefinition,
     MessageConversationItem,
     RealtimeResponse,
     TextContentPart,
@@ -98,3 +99,7 @@ def chat_message_to_conv_items(message: ChatMessage) -> list[ConversationItem]:
             )
 
     return items
+
+
+def ai_function_to_tool(func: AIFunction) -> FunctionDefinition:
+    return FunctionDefinition(name=func.name, description=func.desc, parameters=func.json_schema)

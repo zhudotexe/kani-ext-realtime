@@ -79,10 +79,19 @@ class OpenAIRealtimeKani(Kani):
             raise RuntimeError("This RealtimeKani has already connected to the socket.")
         self._has_connected = True
         await self.session.connect()
-        # send config over ws
+
+        # configure tools
         if session_config:
-            await self.session.send(client_events.SessionUpdate(session=session_config))
-            await self.session.wait_for("session.updated")
+            tool_defs = session_config.tools + list(map(interop.ai_function_to_tool, self.functions.values()))
+            session_config.tools = tool_defs
+        else:
+            tool_defs = list(map(interop.ai_function_to_tool, self.functions.values()))
+            session_config = self.session.session_config.model_copy(update={"tools": tool_defs})
+
+        # send session config over WS
+        await self.session.send(client_events.SessionUpdate(session=session_config))
+        await self.session.wait_for("session.updated")
+
         # send chat history over ws
         if self.always_included_messages:
             warnings.warn(

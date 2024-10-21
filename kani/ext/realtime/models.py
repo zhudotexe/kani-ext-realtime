@@ -27,10 +27,6 @@ class FunctionDefinition(BaseModel):
     description: str
     parameters: dict
 
-    # @classmethod
-    # def from_ai_function(cls, f: AIFunction):
-    #     return cls(name=f.name, description=f.desc, parameters=f.json_schema)
-
 
 class ResponseConfig(BaseModel):
     modalities: list[str] = ["text", "audio"]
@@ -59,7 +55,6 @@ class AudioContentPart(BaseModel):
     type: Literal["input_audio", "audio"] = "input_audio"
     audio: str | None = Field(default=None, repr=False)
     transcript: str
-    # todo transcript_bytes
 
 
 ContentPart = Annotated[TextContentPart | AudioContentPart, Field(discriminator="type")]
