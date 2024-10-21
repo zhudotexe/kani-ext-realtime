@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import sys
 from typing import Literal, overload
 
 from kani.kani import Kani
@@ -12,6 +13,11 @@ from kani.utils.message_formatters import assistant_message_contents_thinking, a
 
 from . import interop
 from .utils import play_audio
+
+
+async def ainput(string: str) -> str:
+    await asyncio.get_event_loop().run_in_executor(None, lambda s=string: sys.stdout.write(s))
+    return await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
 
 
 # pretty much reimplementations of chat_in_terminal but it plays the output if there's audio
@@ -91,7 +97,8 @@ async def chat_in_terminal_audio_async(
 
             # get user query
             if not ai_first or round_num > 0:
-                query = input("USER: ").strip()
+                query = await ainput("USER: ")
+                query = query.strip()
                 if echo:
                     print_width(query, width=width, prefix="USER: ")
                 if stopword and query == stopword:

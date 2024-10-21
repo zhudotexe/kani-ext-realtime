@@ -160,9 +160,8 @@ class OpenAIRealtimeKani(Kani):
             async def audio_callback(_):
                 pass
 
-        await self.session.send(
-            client_events.ResponseCreate(response=self.session.session_config.model_copy(update=kwargs))
-        )
+        response_config = self.session.session_config.model_copy(update=kwargs) if self.session.session_config else None
+        await self.session.send(client_events.ResponseCreate(response=response_config))
         response_created_data: server_events.ResponseCreated = await self.session.wait_for("response.created")
 
         break_sentinel = object()

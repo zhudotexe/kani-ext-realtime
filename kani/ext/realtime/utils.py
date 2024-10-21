@@ -1,14 +1,83 @@
 import asyncio
 import base64
 import json
+import queue
 import threading
+import time
+import warnings
 
 from pydub import AudioSegment
-from pydub.playback import play
 
 
 # ===== audio =====
-class AudioManager:
+class AudioManagerBase:
+    def play(self, segment: AudioSegment):
+        raise NotImplementedError
+
+
+class PyAudioAudioManager(AudioManagerBase):
+    """Audio manager using a PyAudio stream"""
+
+    def __init__(self):
+        self.q = queue.Queue()
+        self.thread = None
+        self.stream = None
+
+    def play(self, segment: AudioSegment):
+        # push the segment onto the queue
+        self.q.put(segment)
+        # open the stream
+        if self.stream is None:
+            p = pyaudio.PyAudio()
+            self.stream = p.open(
+                format=p.get_format_from_width(segment.sample_width),
+                channels=segment.channels,
+                rate=segment.frame_rate,
+                output=True,
+            )
+        # start the thread to handle the queue
+        if self.thread is None:
+            self.thread = threading.Thread(target=self._thread_entrypoint, daemon=True)
+            self.thread.start()
+
+    def _thread_entrypoint(self):
+        from pydub.utils import make_chunks
+
+        # hack: 100ms sleep before reading from q to avoid startup crunchiness
+        time.sleep(0.1)
+        while True:
+            segment = self.q.get()
+            for chunk in make_chunks(segment, 500):
+                self.stream.write(chunk.raw_data)
+
+
+# class FFMPEGAudioManager(AudioManagerBase):
+#     """Audio manager using a ffplay process with a byte pipe"""
+#
+#     def __init__(self):
+#         self._lock = threading.Lock()
+#         self.ffplay = None
+#
+#     def play(self, segment: AudioSegment):
+#         # start the ffplay process to consume from our byte pipe
+#         # TODO fixme - seems like ffplay continues to seek if no data from pipe, won't play new data until it
+#         # "catches up" with the seek. Maybe piping to ffmpeg and having ffmpeg merge with silence can help?
+#         with self._lock:
+#             if self.ffplay is None:
+#                 self.ffplay = subprocess.Popen(
+#                     ["ffplay", "-nodisp", "-f", "s16le", "-ar", "24000", "-acodec", "pcm_s16le", "-i", "-"],
+#                     stdin=subprocess.PIPE,
+#                     stdout=subprocess.DEVNULL,
+#                     stderr=subprocess.DEVNULL,
+#                 )
+#         # then send the bytes over the pipe
+#         self.ffplay.stdin.write(segment.raw_data)
+#         self.ffplay.stdin.flush()
+
+
+class PyDubAudioManager(AudioManagerBase):
+    """Fallback audio manager using pydub's default play if we don't have ffplay or pyaudio"""
+
     def __init__(self):
         self.pending_segment: AudioSegment | None = None
         self.thread = None
@@ -29,6 +98,8 @@ class AudioManager:
                 self._has_pending.set()
 
     def _thread_entrypoint(self):
+        from pydub.playback import play
+
         while True:
             self._has_pending.wait()
             with self._lock:
@@ -38,32 +109,28 @@ class AudioManager:
             play(segment)
 
 
-# def _play_with_ffplay(seg):
-#     subprocess.call(["ffplay", "-nodisp", "-autoexit", "-hide_banner", "-"])
-#
-# 
-# def _play_with_pyaudio(seg):
-#     import pyaudio
-#
-#     p = pyaudio.PyAudio()
-#     stream = p.open(format=p.get_format_from_width(seg.sample_width),
-#                     channels=seg.channels,
-#                     rate=seg.frame_rate,
-#                     output=True)
-#
-#     # Just in case there were any exceptions/interrupts, we release the resource
-#     # So as not to raise OSError: Device Unavailable should play() be used again
-#     try:
-#         # break audio into half-second chunks (to allows keyboard interrupts)
-#         for chunk in make_chunks(seg, 500):
-#             stream.write(chunk._data)
-#     finally:
-#         stream.stop_stream()
-#         stream.close()
-#
-#         p.terminate()
+try:
+    import pyaudio
 
-_global_audio_manager = AudioManager()
+    _global_audio_manager = PyAudioAudioManager()
+except ImportError:
+    # # check if ffplay is available
+    # _ffplay_available = (
+    #     subprocess.run(["ffplay", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    # )
+    # if _ffplay_available:
+    #     _global_audio_manager = FFMPEGAudioManager()
+    # else:
+    # warnings.warn(
+    #     "You do not have PyAudio or ffmpeg installed. Playback from utilities like chat_in_terminal_audio may have"
+    #     " choppy output. We recommend installing both ffmpeg and PyAudio for best performance."
+    # )
+    warnings.warn(
+        "You do not have PyAudio installed. Playback from utilities like chat_in_terminal_audio may have choppy output."
+        " We recommend installing PyAudio for best audio performance, but it is unnecessary if you are not playing"
+        " audio on this machine."
+    )
+    _global_audio_manager = PyDubAudioManager()
 
 
 async def play_audio(audio_bytes: bytes):
