@@ -1,5 +1,7 @@
 """Translation between Kani models and OpenAI models"""
 
+import base64
+
 from kani import ChatMessage, ChatRole, FunctionCall, MessagePart, ToolCall
 
 from .models import (
@@ -26,6 +28,12 @@ class AudioPart(MessagePart):
     oai_type: str
     audio_b64: str | None
     transcript: str
+
+    @property
+    def audio_bytes(self) -> bytes | None:
+        if self.audio_b64 is None:
+            return None
+        return base64.b64decode(self.audio_b64)
 
     def __str__(self):
         return self.transcript

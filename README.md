@@ -16,8 +16,28 @@ See https://platform.openai.com/docs/guides/realtime for more information on the
 ## Usage
 
 ```python
-# TBD
+import asyncio
+
+from kani.ext.realtime import OpenAIRealtimeKani
+from kani.ext.realtime.cli import chat_in_terminal_audio_async
+
+
+async def main():
+    ai = OpenAIRealtimeKani()
+    await ai.connect()
+    await chat_in_terminal_audio_async(ai)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
+
+- OpenAIRealtimeKani: manages a conversation
+    - use `.session` for underlying OpenAI session
+    - listen to events with `.session.add_listener` or `.session.wait_for`
+- playing audio from streaming interfaces:
+    - `ai.full_round_stream(..., audio_callback=play_audio)` (for example)
+- `chat_in_terminal_audio_async`: use `mode="audio"|"full_duplex"` for audio I/O TODO
 
 <!--
 ## Publishing to PyPI
