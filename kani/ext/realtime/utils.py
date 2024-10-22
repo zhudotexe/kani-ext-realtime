@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import queue
+import subprocess
 import threading
 import time
 import warnings
@@ -56,6 +57,7 @@ class PyAudioAudioManager(AudioManagerBase):
 #
 #     def __init__(self):
 #         self._lock = threading.Lock()
+#         self.ffmpeg = None
 #         self.ffplay = None
 #
 #     def play(self, segment: AudioSegment):
@@ -63,16 +65,46 @@ class PyAudioAudioManager(AudioManagerBase):
 #         # TODO fixme - seems like ffplay continues to seek if no data from pipe, won't play new data until it
 #         # "catches up" with the seek. Maybe piping to ffmpeg and having ffmpeg merge with silence can help?
 #         with self._lock:
-#             if self.ffplay is None:
-#                 self.ffplay = subprocess.Popen(
-#                     ["ffplay", "-nodisp", "-f", "s16le", "-ar", "24000", "-acodec", "pcm_s16le", "-i", "-"],
+#             if self.ffmpeg is None:
+#                 self.ffmpeg = subprocess.Popen(
+#                     [
+#                         "ffmpeg",
+#                         "-use_wallclock_as_timestamps",
+#                         "true",
+#                         "-f",
+#                         "s16le",
+#                         "-ar",
+#                         "24000",
+#                         "-ac",
+#                         "1",
+#                         # "-re",
+#                         "-i",
+#                         "pipe:0",
+#                         # "-af",
+#                         # "aresample=async=1",
+#                         "-f",
+#                         "wav",
+#                         "pipe:",
+#                     ],
 #                     stdin=subprocess.PIPE,
+#                     stdout=subprocess.PIPE,
+#                     stderr=subprocess.DEVNULL,
+#                 )
+#                 self.ffplay = subprocess.Popen(
+#                     ["ffplay", "-nodisp", "-i", "-"],
+#                     stdin=self.ffmpeg.stdout,
 #                     stdout=subprocess.DEVNULL,
 #                     stderr=subprocess.DEVNULL,
 #                 )
+#                 # self.ffplay = subprocess.Popen(
+#                 #     ["ffplay", "-nodisp", "-f", "s16le", "-ar", "24000", "-acodec", "pcm_s16le", "-i", "-"],
+#                 #     stdin=self.ffmpeg.stdout,
+#                 #     stdout=subprocess.DEVNULL,
+#                 #     stderr=subprocess.DEVNULL,
+#                 # )
 #         # then send the bytes over the pipe
-#         self.ffplay.stdin.write(segment.raw_data)
-#         self.ffplay.stdin.flush()
+#         self.ffmpeg.stdin.write(segment.raw_data)
+#         self.ffmpeg.stdin.flush()
 
 
 class PyDubAudioManager(AudioManagerBase):
@@ -121,14 +153,15 @@ except ImportError:
     # if _ffplay_available:
     #     _global_audio_manager = FFMPEGAudioManager()
     # else:
-    # warnings.warn(
-    #     "You do not have PyAudio or ffmpeg installed. Playback from utilities like chat_in_terminal_audio may have"
-    #     " choppy output. We recommend installing both ffmpeg and PyAudio for best performance."
-    # )
+    #     warnings.warn(
+    #         "You do not have PyAudio or ffmpeg installed. Playback from utilities like chat_in_terminal_audio may have"
+    #         " choppy output. We recommend installing PyAudio or ffmpeg for best performance, but it is unnecessary if"
+    #         " you are not playing audio on this machine."
+    #     )
     warnings.warn(
-        "You do not have PyAudio installed. Playback from utilities like chat_in_terminal_audio may have choppy output."
-        " We recommend installing PyAudio for best audio performance, but it is unnecessary if you are not playing"
-        " audio on this machine."
+        "You do not have PyAudio installed. Playback from utilities like chat_in_terminal_audio may have choppy"
+        " output. We recommend installing PyAudio for best audio performance, but it is unnecessary if you are not"
+        " playing audio on this machine."
     )
     _global_audio_manager = PyDubAudioManager()
 

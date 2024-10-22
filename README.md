@@ -37,7 +37,7 @@ if __name__ == "__main__":
     - listen to events with `.session.add_listener` or `.session.wait_for`
 - playing audio from streaming interfaces:
     - `ai.full_round_stream(..., audio_callback=play_audio)` (for example)
-- `chat_in_terminal_audio_async`: use `mode="audio"|"full_duplex"` for audio I/O TODO
+- `chat_in_terminal_audio_async`: use `mode="stream" | "full_duplex"` for audio I/O TODO
 
 <!--
 ## Publishing to PyPI

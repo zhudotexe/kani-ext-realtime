@@ -16,4 +16,29 @@ if __name__ == "__main__":
 
 """
 ffmpeg -i test.mp3 -f s16le -acodec pcm_s16le -ar 24000 -ac 1 - | ffplay -nodisp -f s16le -ar 24000 -ac 1 -
+
+https://www.reddit.com/r/ffmpeg/comments/148o6jb/inserting_silence_into_stream_when_stream_is/
+https://superuser.com/questions/1598926/fill-gaps-in-piped-in-audio-with-silence-in-ffmpeg
+https://superuser.com/questions/1859542/ffplay-reading-pcm-data-from-pipe-pause-when-no-data-available-instead-of-cont
+all in one? weird timing
+ffmpeg -i test.mp3 -f s16le -acodec pcm_s16le -ar 24000 -ac 1 - | \
+ffmpeg \
+    -use_wallclock_as_timestamps true \
+    -f s16le -ar 24000 -ac 1 -re -i pipe:0 -af aresample=async=1 \
+    -f wav pipe: | \
+ffplay -nodisp -
+
+2 resamples? too fast
+ffmpeg -i test.mp3 -f s16le -acodec pcm_s16le -ar 24000 -ac 1 - | \
+ffmpeg \
+    -f s16le -ar 24000 -ac 1 -i pipe:0 \
+    -f wav pipe: | \
+ffmpeg \
+    -f wav -re -i pipe:0 \
+    -f wav -af aresample=async=1 pipe: | \
+ffplay -nodisp -
+
+filters:
+apad
+amix
 """

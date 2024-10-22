@@ -300,11 +300,3 @@ class OpenAIRealtimeKani(Kani):
     async def close(self):
         """Disconnect from the WS."""
         await self.session.close()
-
-
-"""
-STREAMING NOTE TO SELF:
-to stream audio, pass audio_callback to full_round_stream or chat_round_stream
-otherwise it will only do text
-async def audio_callback(data: bytes)
-"""
