@@ -69,7 +69,7 @@ class ConversationItemBase(BaseModel, abc.ABC):
 class MessageConversationItem(ConversationItemBase):
     type: Literal["message"] = "message"
     role: Literal["user", "assistant", "system"]
-    content: list[ContentPart]
+    content: list[ContentPart] = []
 
 
 class FunctionCallConversationItem(ConversationItemBase):
@@ -126,7 +126,7 @@ class RealtimeResponse(BaseModel):
     object: Literal["realtime.response"]
     status: Literal["in_progress", "completed", "cancelled", "failed", "incomplete"]
     status_details: dict | None
-    output: list[ConversationItem]
+    output: list[ConversationItem] = []
     usage: UsageDetails | None
 
 

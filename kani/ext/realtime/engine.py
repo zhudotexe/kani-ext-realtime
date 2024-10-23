@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import collections
 import contextlib
 import logging
 import os
@@ -9,7 +10,7 @@ from typing import AsyncIterable, Awaitable, Callable
 from kani import AIFunction, ChatMessage, ExceptionHandleResult, Kani, ToolCall
 from kani.engines.base import BaseCompletion, BaseEngine, Completion
 from kani.exceptions import FunctionCallException
-from kani.models import ChatRole, QueryType
+from kani.models import ChatRole, FunctionCall, QueryType
 from kani.streaming import DummyStream, StreamManager
 
 from . import interop, models as oaimodels
@@ -300,3 +301,160 @@ class OpenAIRealtimeKani(Kani):
     async def close(self):
         """Disconnect from the WS."""
         await self.session.close()
+
+    # ===== full duplex =====
+    async def full_duplex(
+        self,
+        audio_stream: AsyncIterable[bytes],  # todo what about manual response creates
+        audio_callback: Callable[[bytes], Awaitable] = None,
+        **kwargs,  # todo this might be a good place for session config too?
+    ) -> AsyncIterable[StreamManager]:
+        """
+        Stream audio bytes from the given stream to the realtime model.
+
+        Yields a stream for each conversation item created (both USER and ASSISTANT). Each stream will be related to
+        exactly one conversation item (i.e., message), and multiple streams may emit simultaneously.
+
+        To consume tokens from a stream, use this class as so:
+
+        .. code-blocK:: python
+
+            stream_tasks = set()
+
+            async def handle_stream(stream):
+                # do processing for a single message's stream here...
+                # this example code does NOT account for multiple simultaneous messages
+                async for token in stream:
+                    print(token, end="")
+                msg = await stream.message()
+
+            async for stream in ai.full_duplex(audio_stream):
+                task = asyncio.create_task(handle_stream(stream))
+                # to keep a live reference to the task
+                # see https://docs.python.org/3/library/asyncio-task.html#creating-tasks
+                stream_tasks.add(task)
+                task.add_done_callback(stream_tasks.discard)
+
+        Each :class:`.StreamManager` object yielded by this method contains a :attr:`.StreamManager.role` attribute
+        that can be used to determine if a message is from the user, engine or a function call. This attribute will be
+        available *before* iterating over the stream.
+
+        .. note::
+            This method will exit once the ``audio_stream`` is exhausted (i.e., the iterator raises StopAsyncIteration).
+
+        .. note::
+            For lower-level control over the realtime chat session (e.g. to send events directly to the server), see
+            :class:`.RealtimeSession` and :module:`.events`. For example, you might use the following to request a
+            response when serverside VAD is disabled:
+
+            .. code-block:: python
+
+                from kani.ext.realtime import events
+
+                await ai.session.send(events.client.ResponseCreate())
+
+            See https://platform.openai.com/docs/api-reference/realtime-client-events for more details.
+
+        :param audio_stream: An async iterator that emits audio frames (bytes). Audio frames should be encoded as
+            raw 16 bit PCM audio at 24kHz, 1 channel, little-endian.
+        :param audio_callback: An async function that consumes audio frames as emitted by the model. See
+            :func:`.play_audio` for an example.
+        """
+        if audio_callback is None:
+
+            async def audio_callback(_):
+                pass
+
+        break_sentinel = object()
+        # streamer for item with given ID reads elements from their q, stored here
+        streamer_queues = collections.defaultdict(asyncio.Queue)
+        yielder_q = asyncio.Queue()  # streamers to yield
+
+        # helper for yielding
+        async def yield_from_queue(q: asyncio.Queue):
+            while True:
+                item_to_yield = await q.get()
+                if item_to_yield is break_sentinel:
+                    break
+                yield item_to_yield
+
+        # main event handler
+        async def listener(e):
+            """On event from server, route the event to the right streamer or yield a new streamer"""
+            match e:
+                # ===== new conversation item =====
+                # we only care about messages here - function calls are handled elsewhere
+                case server_events.ConversationItemCreated(
+                    item=oaimodels.MessageConversationItem(id=item_id, role=role)
+                ):
+                    streamer_q = streamer_queues[item_id]
+                    await yielder_q.put(StreamManager(yield_from_queue(streamer_q), role=ChatRole(role)))
+                # ===== streaming items (asst) =====
+                case server_events.ResponseTextDelta(
+                    item_id=item_id, delta=text
+                ) | server_events.ResponseAudioTranscriptDelta(item_id=item_id, delta=text):
+                    await streamer_queues[item_id].put(text)
+                case server_events.ResponseDone(response=response):
+                    message = interop.response_to_chat_message(response)
+                    completion = Completion(
+                        message=message,
+                        prompt_tokens=response.usage.input_tokens,
+                        completion_tokens=response.usage.output_tokens,
+                    )
+                    for item_id in set(i.id for i in response.output if i.type == "message"):
+                        q = streamer_queues[item_id]
+                        await q.put(completion)
+                        await q.put(break_sentinel)
+                        streamer_queues.pop(item_id)
+                # ===== streaming items (user) =====
+                case server_events.ConversationItemInputAudioTranscriptionCompleted(item_id=item_id, transcript=text):
+                    await streamer_queues[item_id].put(text)
+                    item = self.session.conversation_items.get(item_id)
+                    assert isinstance(item, oaimodels.MessageConversationItem)
+                    role = ChatRole(item.role)
+                    content = list(map(interop.content_part_to_message_part, item.content))
+                    message = ChatMessage(role=role, content=content)
+                    completion = Completion(message=message, prompt_tokens=0, completion_tokens=0)
+                    await streamer_queues[item_id].put(completion)
+                    await streamer_queues[item_id].put(break_sentinel)
+                    streamer_queues.pop(item_id)
+                # ===== audio =====
+                case server_events.ResponseAudioDelta(delta=audio_b64):
+                    await audio_callback(base64.b64decode(audio_b64))
+                # ===== function calling =====
+                case server_events.ResponseOutputItemDone(
+                    item=oaimodels.FunctionCallConversationItem(
+                        status="completed", call_id=call_id, name=name, arguments=args
+                    )
+                ):
+                    tc = ToolCall.from_function_call(FunctionCall(name=name, arguments=args), call_id)
+                    # emit a dummystream with the function call
+                    tc_message = ChatMessage.assistant(content=None, tool_calls=[tc])
+                    await yielder_q.put(DummyStream(tc_message))
+                    # actually call it and req a new completion with data
+                    result = await self._do_tool_call(tc, 0)
+                    # save the result to the chat history
+                    await self.add_to_history(result.message)
+                    for item in interop.chat_message_to_conv_items(result.message):
+                        await self.session.send(client_events.ConversationItemCreate(item=item))
+                        await yielder_q.put(DummyStream(result.message))
+                    # request a new completion
+                    await self.session.send(client_events.ResponseCreate())
+
+        # audio sender
+        async def audio_sender_task():
+            async for frame in audio_stream:
+                data = base64.b64encode(frame).decode()
+                await self.session.send(client_events.InputAudioBufferAppend(audio=data))
+            # when we are out of audio, tell the outer loop to break
+            await yielder_q.put(break_sentinel)
+
+        # add the listener, start the task to fwd audio frames, and start emitting
+        self.session.add_listener(listener)
+        audio_task = asyncio.create_task(audio_sender_task())
+        try:
+            async for stream_manager in yield_from_queue(yielder_q):
+                yield stream_manager
+        finally:
+            audio_task.cancel()
+            self.session.remove_listener(listener)

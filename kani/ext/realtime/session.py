@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import warnings
 from typing import Any, Awaitable, Callable, TypeVar
 
 import websockets
@@ -8,7 +7,7 @@ from websockets.asyncio.client import ClientConnection, connect
 
 from ._internal import get_server_event_handlers, server_event_handler
 from .events import ClientEvent, ServerEvent, server as server_events
-from .models import ConversationItem, RealtimeResponse, ResponseConfig, SessionConfig
+from .models import ConversationItem, RealtimeResponse, SessionConfig
 
 log = logging.getLogger(__name__)
 ServerEventT = TypeVar("ServerEventT", bound=ServerEvent)
@@ -180,14 +179,14 @@ class RealtimeSession:
     async def _handle_conversation_item_input_audio_transcription_completed(
         self, event: server_events.ConversationItemInputAudioTranscriptionCompleted
     ):
-        content = self._get_item_content(event.item_id, event.content_index)
+        content = self.get_item_content(event.item_id, event.content_index)
         content.transcript = event.transcript
 
     @server_event_handler("conversation.item.input_audio_transcription.failed")
     async def _handle_conversation_item_input_audio_transcription_failed(
         self, event: server_events.ConversationItemInputAudioTranscriptionFailed
     ):
-        content = self._get_item_content(event.item_id, event.content_index)
+        content = self.get_item_content(event.item_id, event.content_index)
         content.transcript = "[transcript failed]"  # todo
         log.warning(f"Audio transcription failed: {event.error}")
 
@@ -232,7 +231,7 @@ class RealtimeSession:
         pass  # todo
 
     # ==== helpers ====
-    def _get_item_content(self, item_id: str, content_index: int):
+    def get_item_content(self, item_id: str, content_index: int):
         item = self.conversation_items.get(item_id)
         if item is None:
             log.warning(f"Got event referencing item that does not exist: {item_id}")

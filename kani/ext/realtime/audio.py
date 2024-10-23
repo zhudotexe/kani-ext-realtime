@@ -1,8 +1,7 @@
 import asyncio
 import base64
-import json
+import io
 import queue
-import subprocess
 import threading
 import time
 import warnings
@@ -161,7 +160,7 @@ except ImportError:
     warnings.warn(
         "You do not have PyAudio installed. Playback from utilities like chat_in_terminal_audio may have choppy"
         " output. We recommend installing PyAudio for best audio performance, but it is unnecessary if you are not"
-        " playing audio on this machine."
+        ' playing audio on this machine. You can also use `pip install "kani-ext-realtime[all]"`.'
     )
     _global_audio_manager = PyDubAudioManager()
 
@@ -179,21 +178,13 @@ async def play_audio(audio_bytes: bytes):
     asyncio.get_event_loop().run_in_executor(None, _global_audio_manager.play, audio)
 
 
-def audio_to_item_create_event(audio_bytes: bytes) -> str:
-    # adapted from OpenAI docs
-    audio = AudioSegment(data=audio_bytes, sample_width=2, channels=1, frame_rate=24000)
-    pcm_audio = audio.raw_data
-
-    # # Load the audio file from the byte stream
-    # audio = AudioSegment.from_file(io.BytesIO(audio_bytes))
-    # # Resample to 24kHz mono pcm16
-    # pcm_audio = audio.set_frame_rate(24000).set_channels(1).set_sample_width(2).raw_data
+def audio_to_b64(audio_bytes: bytes) -> str:
+    """Encode an arbitrarily-encoded audio bytestring into the correct format."""
+    # Load the audio file from the byte stream
+    audio = AudioSegment.from_file(io.BytesIO(audio_bytes))
+    # Resample to 24kHz mono pcm16
+    pcm_audio = audio.set_frame_rate(24000).set_channels(1).set_sample_width(2).raw_data
 
     # Encode to base64 string
     pcm_base64 = base64.b64encode(pcm_audio).decode()
-
-    event = {
-        "type": "conversation.item.create",
-        "item": {"type": "message", "role": "user", "content": [{"type": "input_audio", "audio": pcm_base64}]},
-    }
-    return json.dumps(event)
+    return pcm_base64

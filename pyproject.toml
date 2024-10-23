@@ -8,7 +8,7 @@ version = "0.0.1"
 authors = [
     { name = "Andrew Zhu", email = "andrew@zhu.codes" },
 ]
-description = "YOUR DESCRIPTION HERE"
+description = "A kani extension for interfacing with OpenAI's Realtime API."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
@@ -22,10 +22,15 @@ classifiers = [
 ]
 dependencies = [
     "kani>=1.2.0,<2.0.0",
-#    "pyaudio>=0.2.0,<1.0.0",  # portaudio installation also needed - todo make this
     "pydantic>=2.0.0,<3.0.0",
     "pydub>=0.25.0,<1.0.0",
     "websockets>=13.1",
+]
+
+[project.optional-dependencies]
+all = [
+    "pyaudio>=0.2.0,<1.0.0",
+    "rich",
 ]
 
 [project.urls]
