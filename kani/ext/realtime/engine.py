@@ -143,6 +143,10 @@ class OpenAIRealtimeKani(Kani):
                     await self.session.send(client_events.ConversationItemCreate(item=item))
                     await self.session.wait_for("conversation.item.created")
 
+    @property
+    def is_connected(self):
+        return self._has_connected
+
     # ===== weird overrides =====
     @property
     def always_included_messages(self):

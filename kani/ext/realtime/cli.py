@@ -142,6 +142,9 @@ async def chat_in_terminal_audio_async(
     if verbose:
         echo = show_function_args = show_function_returns = True
 
+    if not kani.is_connected:
+        await kani.connect()
+
     if mode == "full_duplex":
         await _chat_in_terminal_full_duplex(
             kani,
