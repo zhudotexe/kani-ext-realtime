@@ -102,6 +102,8 @@ async def _chat_in_terminal_full_duplex(
     )
     await manager.start()
 
+    print("Listening for input from microphone...")
+
     # request an initial completion if we want it
     if ai_first:
         await kani.session.send(client_events.ResponseCreate())
@@ -127,7 +129,7 @@ async def chat_in_terminal_audio_async(
     show_function_args: bool = False,
     show_function_returns: bool = False,
     verbose: bool = False,
-    mode: Literal["chat", "stream", "full_duplex"] = "stream",
+    mode: Literal["chat", "stream", "full_duplex"] = "full_duplex",
     mic_id: int = 0,
 ):
     """Async version of :func:`.chat_in_terminal_audio`.
@@ -297,7 +299,10 @@ class FullDuplexManager:
         # assistant
         if stream.role == ChatRole.ASSISTANT:
             await buffer_stream(stream, output_buffer, width=self.width, prefix="AI: ")
+            # once the stream is done, fix the output
             msg = await stream.message()
+            output_buffer.clear()
+            output_buffer.append(format_width(msg.text, width=self.width, prefix="AI: "))
             text = assistant_message_thinking(msg, show_args=self.show_function_args)
             if text:
                 output_buffer.append(format_width(text, width=self.width, prefix="AI: "))
@@ -308,6 +313,10 @@ class FullDuplexManager:
         # user
         elif stream.role == ChatRole.USER:
             await buffer_stream(stream, output_buffer, width=self.width, prefix="USER: ")
+            # once the stream is done, fix the output
+            msg = await stream.message()
+            output_buffer.clear()
+            output_buffer.append(format_width(msg.text, width=self.width, prefix="USER: "))
 
     def get_display_text(self):
         return "\n".join("".join(part for part in output) for output in self.stream_outputs)

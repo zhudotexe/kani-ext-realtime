@@ -39,5 +39,5 @@ async def test2():
 
 if __name__ == "__main__":
     faulthandler.enable()
-    logging.basicConfig(level=logging.DEBUG)
+    # logging.basicConfig(level=logging.DEBUG)
     asyncio.run(test2())

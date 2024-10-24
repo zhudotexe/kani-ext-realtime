@@ -14,6 +14,8 @@ ServerEventT = TypeVar("ServerEventT", bound=ServerEvent)
 
 
 class RealtimeSession:
+    """This is an internal object used to manage the state of the OpenAI Realtime session."""
+
     def __init__(
         self,
         api_key: str,
@@ -66,7 +68,11 @@ class RealtimeSession:
 
     # ==== lifecycle ====
     async def connect(self):
-        """Connect to the WS, begin a task for event handling, and init the session."""
+        """
+        Connect to the WS, begin a task for event handling, and init the session.
+
+        You should usually call :meth:`.OpenAIRealtimeKani.connect` instead of this.
+        """
         if self.ws_task is None:
             self.ws_task = asyncio.create_task(self._ws_task(), name="realtime-ws")
         await self._ws_connected.wait()
@@ -183,7 +189,7 @@ class RealtimeSession:
         self, event: server_events.ConversationItemInputAudioTranscriptionCompleted
     ):
         content = self.get_item_content(event.item_id, event.content_index)
-        content.transcript = event.transcript
+        content.transcript = event.transcript.strip()
 
     @server_event_handler("conversation.item.input_audio_transcription.failed")
     async def _handle_conversation_item_input_audio_transcription_failed(

@@ -58,7 +58,6 @@ class OpenAIRealtimeKani(Kani):
         self._has_connected = False
         self._always_included_messages = always_included_messages
         self._chat_history = chat_history
-        self._pending_msgs = []
 
         Kani.__init__(
             self,
@@ -67,11 +66,12 @@ class OpenAIRealtimeKani(Kani):
             always_included_messages=always_included_messages,
             chat_history=chat_history,
         )
+        self.lock = contextlib.nullcontext()
+
         self.session = RealtimeSession(
             api_key=api_key, model=model, ws_base=ws_base, headers=headers, **generation_args
         )
-
-        self.lock = contextlib.nullcontext()
+        """The underlying state of the OpenAI Realtime API. Used for lower-level API operations."""
 
     # ===== lifecycle =====
     async def connect(self, session_config: oaimodels.SessionConfig = None):
@@ -129,6 +129,7 @@ class OpenAIRealtimeKani(Kani):
         if not self._has_connected:
             return self._chat_history
         # todo read chat items from session
+        # todo return immutable
 
     @chat_history.setter
     def chat_history(self, value):
@@ -138,6 +139,7 @@ class OpenAIRealtimeKani(Kani):
 
     async def add_to_history(self, message: ChatMessage):
         # intentionally do nothing here
+        # todo maybe call a conversation.item.add if not in session?
         pass
 
     async def get_prompt(self) -> list[ChatMessage]:
@@ -407,7 +409,8 @@ class OpenAIRealtimeKani(Kani):
                         streamer_queues.pop(item_id)
                 # ===== streaming items (user) =====
                 case server_events.ConversationItemInputAudioTranscriptionCompleted(item_id=item_id, transcript=text):
-                    await streamer_queues[item_id].put(text)
+                    await streamer_queues[item_id].put(text.strip())
+                    # emit a completion too
                     item = self.session.conversation_items.get(item_id)
                     assert isinstance(item, oaimodels.MessageConversationItem)
                     role = ChatRole(item.role)
