@@ -35,7 +35,17 @@ The OpenAIRealtimeKani is compatible with most standard kani interfaces -- you c
 
 - Define `@ai_function`s which the realtime model will call (by subclassing `OpenAIRealtimeKani`)
 - Supply a `system_prompt` or fewshot examples in `chat_history`
+    - (note: you likely want to supply a system prompt through `SessionConfig.instructions` instead, see below)
 - Get text/audio completions like a normal text-text model with `.full_round`
+
+The new methods provided in the `OpenAIRealtimeKani` are:
+
+- `connect(config: SessionConfig)`
+- `full_duplex(input_audio_stream: AsyncIterable[bytes], output_audio_callback: AsyncCallable[[bytes], Any])`
+
+It also supports the configuration options provided by the Realtime API. When you call `.connect`, you can supply a
+`SessionConfig` object, which supports all of the options listed
+at https://platform.openai.com/docs/api-reference/realtime-client-events/session/update.
 
 For more information:
 
