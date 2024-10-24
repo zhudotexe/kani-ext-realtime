@@ -29,9 +29,8 @@ class RealtimeSession:
         **generation_args,
     ):
         """
-        :param api_key: Your OpenAI API key. By default, the API key will be read from the `OPENAI_API_KEY` environment
-            variable.
-        :param model: The id of the realtime model to use (e.g. "gpt-4o-realtime-preview-2024-10-01").
+        :param api_key: Your OpenAI API key.
+        :param model: The id of the realtime model to use (default "gpt-4o-realtime-preview-2024-10-01").
         :param ws_base: The base WebSocket URL to connect to.
         :param headers: A dict of HTTP headers to include with each request.
         :param client: An instance of ``httpx.AsyncClient`` (for reusing the same client in multiple engines).

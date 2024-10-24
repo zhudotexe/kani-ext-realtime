@@ -172,8 +172,9 @@ async def play_audio(audio_bytes: bytes):
     """
     Play the given audio at the next available opportunity, using a global audio queue.
 
-    This is a callback that should be passed to :meth:`.OpenAIRealtimeKani.full_round_stream` or
-    :meth:`.OpenAIRealtimeKani.chat_round_stream` as the ``audio_callback`` parameter.
+    This is a callback that should be passed to :meth:`~kani.Kani.full_round_stream` or
+    :meth:`~kani.Kani.chat_round_stream`, or :meth:`.OpenAIRealtimeKani.full_duplex` as the ``audio_callback``
+    parameter.
     """
     # we assume we're running in "raw 16 bit PCM audio at 24kHz, 1 channel, little-endian" mode
     # if we're in G.711 this will probably break

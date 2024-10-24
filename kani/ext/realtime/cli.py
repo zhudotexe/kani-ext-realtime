@@ -201,7 +201,7 @@ def chat_in_terminal_audio(
     show_function_args: bool = False,
     show_function_returns: bool = False,
     verbose: bool = False,
-    mode: Literal["chat", "stream", "full_duplex"] = "stream",
+    mode: Literal["chat", "stream", "full_duplex"] = "full_duplex",
     mic_id: int | None = None,
 ): ...
 

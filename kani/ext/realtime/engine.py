@@ -36,6 +36,11 @@ class DummyEngine(BaseEngine):
 
 
 class OpenAIRealtimeKani(Kani):
+    r"""
+    In addition to all of :class:`kani.Kani`\ 's method, the OpenAIRealtimeKani provides the following two methods
+    for interacting with the realtime API.
+    """
+
     def __init__(
         self,
         # realtime session args
@@ -46,10 +51,35 @@ class OpenAIRealtimeKani(Kani):
         headers: dict = None,
         # kani args
         system_prompt: str = None,
-        always_included_messages: list[ChatMessage] = None,
         chat_history: list[ChatMessage] = None,
+        always_included_messages: list[ChatMessage] = None,
         **generation_args,
     ):
+        """
+        :param api_key: Your OpenAI API key. By default, the API key will be read from the `OPENAI_API_KEY` environment
+            variable.
+        :param model: The id of the realtime model to use (default "gpt-4o-realtime-preview-2024-10-01").
+        :param system_prompt: The system prompt to provide to the LM. The prompt *will* be included in chat_history.
+
+            .. note::
+                For interacting with the Realtime API, you may instead wish to provide session instructions by providing
+                the ``instructions`` key to :class:`.SessionConfig` in your :meth:`connect` call.
+        :param chat_history: The chat history to start with (not including system prompt or always included messages),
+            e.g. for few-shot prompting. By default, each kani starts with a new conversation session.
+        :param always_included_messages: Prepended to ``chat_history``.
+
+            .. warning::
+                Unlike normal Kanis, due to the server-managed nature of the OpenAI realtime API, messages marked as
+                always included may not always be included by the server. These messages will instead be prepended to
+                any ``chat_history`` and *will* be included in the ``chat_history`` attribute.
+        :param ws_base: The base WebSocket URL to connect to (default "wss://api.openai.com/v1/realtime").
+        :param headers: A dict of HTTP headers to include with each request.
+        :param client: An instance of ``httpx.AsyncClient`` (for reusing the same client in multiple engines).
+        :param generation_args: The arguments to pass to the ``response.create`` call with each request. See
+            https://platform.openai.com/docs/api-reference/realtime-client-events/response/create for a full list of
+            params. Specifically, these arguments will be passed as the ``response`` key.
+        """
+
         if headers is None:
             headers = {}
         if api_key is None:
@@ -345,7 +375,7 @@ class OpenAIRealtimeKani(Kani):
 
         .. note::
             For lower-level control over the realtime chat session (e.g. to send events directly to the server), see
-            :class:`.RealtimeSession` and :module:`.events`. For example, you might use the following to request a
+            :class:`.RealtimeSession` and :mod:`.events.client`. For example, you might use the following to request a
             response when serverside VAD is disabled:
 
             .. code-block:: python
@@ -357,9 +387,10 @@ class OpenAIRealtimeKani(Kani):
             See https://platform.openai.com/docs/api-reference/realtime-client-events for more details.
 
         :param audio_stream: An async iterator that emits audio frames (bytes). Audio frames should be encoded as
-            raw 16 bit PCM audio at 24kHz, 1 channel, little-endian.
-        :param audio_callback: An async function that consumes audio frames as emitted by the model. See
-            :func:`.play_audio` for an example.
+            raw 16 bit PCM audio at 24kHz, 1 channel, little-endian. See :func:`.get_audio_stream` to get such an
+            audio stream from a system microphone.
+        :param audio_callback: An async function that consumes audio frames as emitted by the model. Use
+            :func:`.play_audio` to play the audio from the system speaker.
         """
         if audio_callback is None:
 

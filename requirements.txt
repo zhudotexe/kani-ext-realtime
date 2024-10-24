@@ -1,1 +1,9 @@
 -e .
+
+# docs
+furo~=2023.9.10
+sphinx~=7.2.6
+sphinx-copybutton~=0.5.2
+sphinx-inline-tabs~=2023.4.21
+sphinx-sitemap~=2.5.1
+matplotlib>=3.0.0,<4.0.0  # depended on by opengraph

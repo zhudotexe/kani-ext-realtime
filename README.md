@@ -22,8 +22,8 @@ from kani.ext.realtime import OpenAIRealtimeKani, chat_in_terminal_audio_async
 
 
 async def main():
-    ai = OpenAIRealtimeKani()
-    await ai.connect()
+    ai = OpenAIRealtimeKani()  # note - the OpenAIRealtimeKani does *not* take an engine!
+    await ai.connect()  # additional step needed to connect to the Realtime API
     await chat_in_terminal_audio_async(ai, mode="full_duplex")
 
 
@@ -31,6 +31,17 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+The OpenAIRealtimeKani is compatible with most standard kani interfaces -- you can, for example:
+
+- Define `@ai_function`s which the realtime model will call (by subclassing `OpenAIRealtimeKani`)
+- Supply a `system_prompt` or fewshot examples in `chat_history`
+- Get text/audio completions like a normal text-text model with `.full_round`
+
+For more information:
+
+## [Read the Docs!](https://kani-ext-realtime.readthedocs.io)
+
+<!--
 - OpenAIRealtimeKani: manages a conversation
     - use `.session` for underlying OpenAI session
     - listen to events with `.session.add_listener` or `.session.wait_for`
@@ -38,7 +49,6 @@ if __name__ == "__main__":
     - `ai.full_round_stream(..., audio_callback=play_audio)` (for example)
 - `chat_in_terminal_audio_async`: use `mode="stream" | "full_duplex"` for audio I/O
 
-<!--
 ## Publishing to PyPI
 
 To publish your package to PyPI, this repo comes with a GitHub Action that will automatically build and upload new
