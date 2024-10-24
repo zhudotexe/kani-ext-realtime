@@ -5,11 +5,12 @@ import queue
 import threading
 import time
 import warnings
+from typing import AsyncIterable
 
 from pydub import AudioSegment
 
 
-# ===== audio =====
+# ===== output =====
 class AudioManagerBase:
     def play(self, segment: AudioSegment):
         raise NotImplementedError
@@ -144,7 +145,9 @@ try:
     import pyaudio
 
     _global_audio_manager = PyAudioAudioManager()
+    _has_pyaudio = True
 except ImportError:
+    _has_pyaudio = False
     # # check if ffplay is available
     # _ffplay_available = (
     #     subprocess.run(["ffplay", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
@@ -178,6 +181,7 @@ async def play_audio(audio_bytes: bytes):
     asyncio.get_event_loop().run_in_executor(None, _global_audio_manager.play, audio)
 
 
+# ===== input =====
 def audio_to_b64(audio_bytes: bytes) -> str:
     """Encode an arbitrarily-encoded audio bytestring into the correct format."""
     # Load the audio file from the byte stream
@@ -188,3 +192,64 @@ def audio_to_b64(audio_bytes: bytes) -> str:
     # Encode to base64 string
     pcm_base64 = base64.b64encode(pcm_audio).decode()
     return pcm_base64
+
+
+if _has_pyaudio:
+
+    class PyAudioInputManager:
+        """Audio manager using a PyAudio stream. This class should NOT be constructed manually."""
+
+        def __init__(self, mic_id: int | None):
+            self.q = asyncio.Queue()
+            self.loop = asyncio.get_event_loop()
+
+            # init pyaudio, create a recording stream
+            p = pyaudio.PyAudio()
+            self.stream = p.open(
+                format=p.get_format_from_width(2),
+                channels=1,
+                rate=24000,
+                frames_per_buffer=1200,
+                input=True,
+                input_device_index=mic_id,
+            )
+
+            # launch thread to start streaming from it
+            self.thread = threading.Thread(target=self._thread_entrypoint, daemon=True)
+            self.thread.start()
+
+        def _thread_entrypoint(self):
+            while True:
+                frame = self.stream.read(self.stream.get_read_available(), exception_on_overflow=False)
+                fut = asyncio.run_coroutine_threadsafe(self.q.put(frame), self.loop)
+                fut.result()
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            return await self.q.get()
+
+    def get_audio_stream(mic_id: int | None) -> AsyncIterable[bytes]:
+        """Return an audio stream manager that yields audio frames from the given mic."""
+        return PyAudioInputManager(mic_id)
+
+    def list_mics():
+        """Print a list of all microphones connected to this device."""
+        p = pyaudio.PyAudio()
+        info = p.get_host_api_info_by_index(0)
+        n_devices = info.get("deviceCount")
+        for i in range(0, n_devices):
+            if (p.get_device_info_by_host_api_device_index(0, i).get("maxInputChannels")) > 0:
+                print(f"ID: {i} -- {p.get_device_info_by_host_api_device_index(0, i).get('name')}")
+
+else:
+
+    def _missing(*_, **__):
+        raise ImportError(
+            "You must install PyAudio to record from the mic. You can install this"
+            ' with `pip install "kani-ext-realtime[all]"`.'
+        )
+
+    get_audio_stream = _missing
+    list_mics = _missing

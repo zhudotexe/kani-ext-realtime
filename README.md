@@ -18,14 +18,13 @@ See https://platform.openai.com/docs/guides/realtime for more information on the
 ```python
 import asyncio
 
-from kani.ext.realtime import OpenAIRealtimeKani
-from kani.ext.realtime.cli import chat_in_terminal_audio_async
+from kani.ext.realtime import OpenAIRealtimeKani, chat_in_terminal_audio_async
 
 
 async def main():
     ai = OpenAIRealtimeKani()
     await ai.connect()
-    await chat_in_terminal_audio_async(ai)
+    await chat_in_terminal_audio_async(ai, mode="full_duplex")
 
 
 if __name__ == "__main__":
@@ -37,7 +36,7 @@ if __name__ == "__main__":
     - listen to events with `.session.add_listener` or `.session.wait_for`
 - playing audio from streaming interfaces:
     - `ai.full_round_stream(..., audio_callback=play_audio)` (for example)
-- `chat_in_terminal_audio_async`: use `mode="stream" | "full_duplex"` for audio I/O TODO
+- `chat_in_terminal_audio_async`: use `mode="stream" | "full_duplex"` for audio I/O
 
 <!--
 ## Publishing to PyPI
