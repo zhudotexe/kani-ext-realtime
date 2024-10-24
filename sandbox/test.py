@@ -34,7 +34,7 @@ async def test1():
 async def test2():
     ai = OpenAIRealtimeKani()
     await ai.connect()
-    await chat_in_terminal_audio_async(ai, mode="stream")
+    await chat_in_terminal_audio_async(ai, mode="full_duplex", mic_id=0)
 
 
 if __name__ == "__main__":

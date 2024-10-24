@@ -57,6 +57,7 @@ class RealtimeSession:
         # ws
         self.ws: ClientConnection | None = None
         self._ws_connected = asyncio.Event()
+        self._session_created = asyncio.Event()
         self.listeners = []
         self.ws_task = None
 
@@ -69,6 +70,7 @@ class RealtimeSession:
         if self.ws_task is None:
             self.ws_task = asyncio.create_task(self._ws_task(), name="realtime-ws")
         await self._ws_connected.wait()
+        await self._session_created.wait()
 
     async def close(self):
         if self.ws_task is not None:
@@ -158,6 +160,7 @@ class RealtimeSession:
 
     @server_event_handler("session.created")
     async def _handle_session_created(self, event: server_events.SessionCreated):
+        self._session_created.set()
         self.session_id = event.session.id
         self.session_config = event.session
 

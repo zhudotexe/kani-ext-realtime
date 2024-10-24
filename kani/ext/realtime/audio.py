@@ -220,7 +220,11 @@ if _has_pyaudio:
 
         def _thread_entrypoint(self):
             while True:
-                frame = self.stream.read(self.stream.get_read_available(), exception_on_overflow=False)
+                n_available = self.stream.get_read_available()
+                if not n_available:
+                    time.sleep(0.05)
+                    continue
+                frame = self.stream.read(n_available, exception_on_overflow=False)
                 fut = asyncio.run_coroutine_threadsafe(self.q.put(frame), self.loop)
                 fut.result()
 

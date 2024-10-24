@@ -4,15 +4,19 @@ import asyncio
 import logging
 import os
 import sys
+import textwrap
 from typing import Literal, overload
 
 from kani.kani import Kani
 from kani.models import ChatRole
+from kani.streaming import StreamManager
 from kani.utils.cli import print_stream, print_width
 from kani.utils.message_formatters import assistant_message_contents_thinking, assistant_message_thinking
 
 from . import interop
-from .audio import play_audio
+from .audio import get_audio_stream, play_audio
+from .engine import OpenAIRealtimeKani
+from .events import client as client_events
 
 
 async def ainput(string: str) -> str:
@@ -68,19 +72,52 @@ async def _chat_in_terminal_round_completion(
 
 
 async def _chat_in_terminal_full_duplex(
-    kani: Kani,
+    kani: OpenAIRealtimeKani,
     *,
     ai_first: bool = False,
-    width: int = None,
+    width: int | None = None,
     show_function_args: bool = False,
     show_function_returns: bool = False,
-    mic_id: int = 0,
+    mic_id: int | None = None,
 ):
-    pass
+    try:
+        from rich.live import Live
+        import pyaudio
+    except ImportError:
+        raise ImportError(
+            "You must install PyAudio and rich to use the built-in full duplex mode. You can install these dependencies"
+            ' with `pip install "kani-ext-realtime[all]"`.'
+        ) from None
+
+    # get the audio stream iterator from pyaudio
+    audio_stream = get_audio_stream(mic_id)
+
+    # send all the info to a bg manager and start it
+    manager = FullDuplexManager(
+        kani,
+        audio_stream,
+        width=width,
+        show_function_args=show_function_args,
+        show_function_returns=show_function_returns,
+    )
+    await manager.start()
+
+    # request an initial completion if we want it
+    if ai_first:
+        await kani.session.send(client_events.ResponseCreate())
+
+    # then show the live data forever
+    try:
+        with Live(manager.get_display_text(), vertical_overflow="visible", auto_refresh=False) as live:
+            while True:
+                live.update(manager.get_display_text(), refresh=True)
+                await asyncio.sleep(0.25)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        await manager.close()
 
 
 async def chat_in_terminal_audio_async(
-    kani: Kani,
+    kani: OpenAIRealtimeKani,
     *,
     rounds: int = 0,
     stopword: str = None,
@@ -93,7 +130,7 @@ async def chat_in_terminal_audio_async(
     mode: Literal["chat", "stream", "full_duplex"] = "stream",
     mic_id: int = 0,
 ):
-    """Async version of :func:`.chat_in_terminal`.
+    """Async version of :func:`.chat_in_terminal_audio`.
     Use in environments when there is already an asyncio loop running (e.g. Google Colab).
     """
     if mode not in ("chat", "stream", "full_duplex"):
@@ -163,11 +200,11 @@ def chat_in_terminal_audio(
     show_function_returns: bool = False,
     verbose: bool = False,
     mode: Literal["chat", "stream", "full_duplex"] = "stream",
-    mic_id: int = 0,
+    mic_id: int | None = None,
 ): ...
 
 
-def chat_in_terminal_audio(kani: Kani, **kwargs):
+def chat_in_terminal_audio(kani: OpenAIRealtimeKani, **kwargs):
     """Chat with a kani right in your terminal.
 
     Useful for playing with kani, quick prompt engineering, or demoing the library.
@@ -191,7 +228,7 @@ def chat_in_terminal_audio(kani: Kani, **kwargs):
     :param bool verbose: Equivalent to setting ``echo``, ``show_function_args``, and ``show_function_returns`` to True.
     :param str mode: The chat mode: "chat" for turn-based chat without streaming, "stream" for turn-based chat with
         streaming and audio, "full_duplex" for realtime conversation from the system default mic.
-    :param int mic_id: The microphone ID to use for recording audio (full_duplex mode only) TODO
+    :param int mic_id: The microphone ID to use for recording audio (default system default mic; full_duplex mode only)
     """
     try:
         asyncio.get_running_loop()
@@ -211,3 +248,131 @@ def chat_in_terminal_audio(kani: Kani, **kwargs):
             )
             return
     asyncio.run(chat_in_terminal_audio_async(kani, **kwargs))
+
+
+class FullDuplexManager:
+    """Manager class for handling multiple concurrent streams for the full duplex mode."""
+
+    def __init__(
+        self,
+        kani: OpenAIRealtimeKani,
+        audio_stream,
+        width: int | None,
+        show_function_args: bool,
+        show_function_returns: bool,
+    ):
+        self.kani = kani
+        self.audio_stream = audio_stream
+        self.width = width
+        self.show_function_args = show_function_args
+        self.show_function_returns = show_function_returns
+
+        self.stream_tasks = set()
+        self.stream_outputs = []
+
+        self.main_task = None
+
+    # ===== lifecycle =====
+    async def start(self):
+        self.main_task = asyncio.create_task(self._main_task())
+
+    async def close(self):
+        if self.main_task is not None:
+            self.main_task.cancel()
+
+    # ===== main =====
+    async def _main_task(self):
+        # bg task to handle getting stream info
+        async for stream in self.kani.full_duplex(self.audio_stream, audio_callback=play_audio):
+            # for each message stream emitted by the model, spawn a task to handle it
+            idx = len(self.stream_outputs)
+            self.stream_outputs.append([])
+            task = asyncio.create_task(self._handle_one_stream_task(stream, idx))
+            self.stream_tasks.add(task)
+            task.add_done_callback(self.stream_tasks.discard)
+
+    async def _handle_one_stream_task(self, stream: StreamManager, output_idx: int):
+        output_buffer = self.stream_outputs[output_idx]
+
+        # assistant
+        if stream.role == ChatRole.ASSISTANT:
+            await buffer_stream(stream, output_buffer, width=self.width, prefix="AI: ")
+            msg = await stream.message()
+            text = assistant_message_thinking(msg, show_args=self.show_function_args)
+            if text:
+                output_buffer.append(format_width(text, width=self.width, prefix="AI: "))
+        # function
+        elif stream.role == ChatRole.FUNCTION and self.show_function_returns:
+            msg = await stream.message()
+            output_buffer.append(format_width(msg.text, width=self.width, prefix="FUNC: "))
+        # user
+        elif stream.role == ChatRole.USER:
+            await buffer_stream(stream, output_buffer, width=self.width, prefix="USER: ")
+
+    def get_display_text(self):
+        return "\n".join("".join(part for part in output) for output in self.stream_outputs)
+
+
+# ===== format helpers =====
+def format_width(msg: str, width: int = None, prefix: str = ""):
+    """
+    Format the given message such that the width of each line is less than *width*.
+    If *prefix* is provided, indents each line after the first by the length of the prefix.
+
+    .. code-block: pycon
+        >>> format_width("Hello world I am a potato", width=15, prefix="USER: ")
+        '''\
+        USER: Hello
+              world I
+              am a
+              potato\
+        '''
+    """
+    if not width:
+        return prefix + msg
+    out = []
+    wrapper = textwrap.TextWrapper(width=width, initial_indent=prefix, subsequent_indent=" " * len(prefix))
+    lines = msg.splitlines()
+    for line in lines:
+        out.append(wrapper.fill(line))
+        wrapper.initial_indent = wrapper.subsequent_indent
+    return "\n".join(out)
+
+
+async def buffer_stream(stream: StreamManager, buf: list, width: int = None, prefix: str = ""):
+    """
+    Buffer tokens from a stream to the given list, with the width of each line less than *width*.
+    If *prefix* is provided, indents each line after the first by the length of the prefix.
+
+    This is a helper function intended to be used with :meth:`.Kani.chat_round_stream` or
+    :meth:`.Kani.full_round_stream`.
+    """
+    prefix_len = len(prefix)
+    line_indent = " " * prefix_len
+    prefix_printed = False
+
+    # print tokens until they overflow width then newline and indent
+    line_len = prefix_len
+    async for token in stream:
+        # only print the prefix if the model actually yields anything
+        if not prefix_printed:
+            buf.append(prefix)
+            prefix_printed = True
+
+        # split by newlines
+        for part in token.splitlines(keepends=True):
+            # then do bookkeeping
+            line_len += len(part)
+            if width and line_len > width:
+                buf.append(f"\n{line_indent}")
+                line_len = prefix_len
+
+            # print the token
+            buf.append(part.rstrip("\r\n"))
+
+            # print a newline if the token had one
+            if part.endswith("\n"):
+                buf.append(f"\n{line_indent}")
+                line_len = prefix_len
+
+    return buf

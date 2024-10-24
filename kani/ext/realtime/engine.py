@@ -78,6 +78,10 @@ class OpenAIRealtimeKani(Kani):
         """Connect to the WS and update the internal state until the engine is closed."""
         if self._has_connected:
             raise RuntimeError("This RealtimeKani has already connected to the socket.")
+        if session_config is None:
+            # we want input_audio_transcription to be on by default - see models for default config
+            session_config = oaimodels.SessionConfig()
+
         self._has_connected = True
         await self.session.connect()
 
@@ -188,14 +192,6 @@ class OpenAIRealtimeKani(Kani):
                     await q.put(text)
                 case server_events.ResponseAudioDelta(response_id=response_created_data.response.id, delta=audio_b64):
                     await audio_callback(base64.b64decode(audio_b64))
-                    # await q.put(interop.AudioPart(oai_type="audio", audio_b64=audio_b64, transcript=""))
-                # case server_events.ResponseOutputItemDone(
-                #     response_id=response_created_data.response.id,
-                #     item=oaimodels.FunctionCallConversationItem(
-                #         status="completed", call_id=call_id, name=name, arguments=args
-                #     ),
-                # ):
-                #     await q.put(ToolCall.from_function_call(FunctionCall(name=name, arguments=args), call_id))
                 case server_events.ResponseDone(response=response):
                     message = interop.response_to_chat_message(response)
                     nonlocal completion
@@ -334,6 +330,9 @@ class OpenAIRealtimeKani(Kani):
                 # see https://docs.python.org/3/library/asyncio-task.html#creating-tasks
                 stream_tasks.add(task)
                 task.add_done_callback(stream_tasks.discard)
+
+        Check out the implementation of :func:`.chat_in_terminal_audio_async` for more in-depth stream handling (e.g.,
+        printing out streams simultaneously without clobbering other messages' outputs).
 
         Each :class:`.StreamManager` object yielded by this method contains a :attr:`.StreamManager.role` attribute
         that can be used to determine if a message is from the user, engine or a function call. This attribute will be

@@ -71,7 +71,7 @@ class ConversationItemDeleted(BaseEvent):
 
 class InputAudioBufferCommitted(BaseEvent):
     type: Literal["input_audio_buffer.committed"] = "input_audio_buffer.committed"
-    previous_item_id: str
+    previous_item_id: str | None
     item_id: str
 
 

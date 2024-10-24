@@ -1,5 +1,7 @@
 from typing import Literal
 
+from pydantic import Field
+
 from .base import ClientEvent as BaseEvent
 from ..models import ConversationItem, ResponseConfig, SessionConfig
 
@@ -12,9 +14,7 @@ class SessionUpdate(BaseEvent):
 
 class InputAudioBufferAppend(BaseEvent):
     type: Literal["input_audio_buffer.append"] = "input_audio_buffer.append"
-    audio: str
-
-    # todo from_bytes
+    audio: str = Field(repr=False)
 
 
 class InputAudioBufferCommit(BaseEvent):

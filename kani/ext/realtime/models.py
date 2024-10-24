@@ -54,7 +54,7 @@ class TextContentPart(BaseModel):
 class AudioContentPart(BaseModel):
     type: Literal["input_audio", "audio"] = "input_audio"
     audio: str | None = Field(default=None, repr=False)
-    transcript: str
+    transcript: str | None
 
 
 ContentPart = Annotated[TextContentPart | AudioContentPart, Field(discriminator="type")]
