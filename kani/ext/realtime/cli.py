@@ -4,13 +4,13 @@ import asyncio
 import logging
 import os
 import sys
-import textwrap
 from typing import Literal, overload
 
+import rich.markup
 from kani.kani import Kani
 from kani.models import ChatRole
 from kani.streaming import StreamManager
-from kani.utils.cli import print_stream, print_width
+from kani.utils.cli import format_stream, format_width, print_stream, print_width
 from kani.utils.message_formatters import assistant_message_contents_thinking, assistant_message_thinking
 
 from . import interop
@@ -140,7 +140,7 @@ async def chat_in_terminal_audio_async(
     if os.getenv("KANI_DEBUG") is not None:
         logging.basicConfig(level=logging.DEBUG)
     if verbose:
-        echo = show_function_args = show_function_returns = True
+        show_function_args = show_function_returns = True
 
     if not kani.is_connected:
         await kani.connect()
@@ -279,7 +279,7 @@ class FullDuplexManager:
 
     # ===== lifecycle =====
     async def start(self):
-        self.main_task = asyncio.create_task(self._main_task())
+        self.main_task = asyncio.create_task(self._main_task(), name="full-duplex-manager")
 
     async def close(self):
         if self.main_task is not None:
@@ -301,13 +301,17 @@ class FullDuplexManager:
 
         # assistant
         if stream.role == ChatRole.ASSISTANT:
-            await buffer_stream(stream, output_buffer, width=self.width, prefix="AI: ")
+            async for part in format_stream(stream, width=self.width, prefix="AI: "):
+                output_buffer.append(part)
             # once the stream is done, fix the output
             msg = await stream.message()
             output_buffer.clear()
-            output_buffer.append(format_width(msg.text, width=self.width, prefix="AI: "))
+            if msg.text is not None:
+                output_buffer.append(format_width(msg.text, width=self.width, prefix="AI: "))
             text = assistant_message_thinking(msg, show_args=self.show_function_args)
             if text:
+                if output_buffer:
+                    output_buffer.append("\n")
                 output_buffer.append(format_width(text, width=self.width, prefix="AI: "))
         # function
         elif stream.role == ChatRole.FUNCTION and self.show_function_returns:
@@ -315,76 +319,13 @@ class FullDuplexManager:
             output_buffer.append(format_width(msg.text, width=self.width, prefix="FUNC: "))
         # user
         elif stream.role == ChatRole.USER:
-            await buffer_stream(stream, output_buffer, width=self.width, prefix="USER: ")
+            async for part in format_stream(stream, width=self.width, prefix="USER: "):
+                output_buffer.append(part)
             # once the stream is done, fix the output
             msg = await stream.message()
             output_buffer.clear()
             output_buffer.append(format_width(msg.text, width=self.width, prefix="USER: "))
 
     def get_display_text(self):
-        return "\n".join("".join(part for part in output) for output in self.stream_outputs)
-
-
-# ===== format helpers =====
-def format_width(msg: str, width: int = None, prefix: str = ""):
-    """
-    Format the given message such that the width of each line is less than *width*.
-    If *prefix* is provided, indents each line after the first by the length of the prefix.
-
-    .. code-block: pycon
-        >>> format_width("Hello world I am a potato", width=15, prefix="USER: ")
-        '''\
-        USER: Hello
-              world I
-              am a
-              potato\
-        '''
-    """
-    if not width:
-        return prefix + msg
-    out = []
-    wrapper = textwrap.TextWrapper(width=width, initial_indent=prefix, subsequent_indent=" " * len(prefix))
-    lines = msg.splitlines()
-    for line in lines:
-        out.append(wrapper.fill(line))
-        wrapper.initial_indent = wrapper.subsequent_indent
-    return "\n".join(out)
-
-
-async def buffer_stream(stream: StreamManager, buf: list, width: int = None, prefix: str = ""):
-    """
-    Buffer tokens from a stream to the given list, with the width of each line less than *width*.
-    If *prefix* is provided, indents each line after the first by the length of the prefix.
-
-    This is a helper function intended to be used with :meth:`.Kani.chat_round_stream` or
-    :meth:`.Kani.full_round_stream`.
-    """
-    prefix_len = len(prefix)
-    line_indent = " " * prefix_len
-    prefix_printed = False
-
-    # print tokens until they overflow width then newline and indent
-    line_len = prefix_len
-    async for token in stream:
-        # only print the prefix if the model actually yields anything
-        if not prefix_printed:
-            buf.append(prefix)
-            prefix_printed = True
-
-        # split by newlines
-        for part in token.splitlines(keepends=True):
-            # then do bookkeeping
-            line_len += len(part)
-            if width and line_len > width:
-                buf.append(f"\n{line_indent}")
-                line_len = prefix_len
-
-            # print the token
-            buf.append(part.rstrip("\r\n"))
-
-            # print a newline if the token had one
-            if part.endswith("\n"):
-                buf.append(f"\n{line_indent}")
-                line_len = prefix_len
-
-    return buf
+        text = "\n".join("".join(part for part in output) for output in self.stream_outputs)
+        return rich.markup.escape(text)
