@@ -72,7 +72,7 @@ def response_to_chat_message(response: RealtimeResponse) -> ChatMessage:
 # ---- kani -> oai ----
 def chat_message_to_conv_items(message: ChatMessage) -> list[ConversationItem]:
     if message.role == ChatRole.FUNCTION:
-        return [FunctionCallOutputConversationItem(output=message.text)]
+        return [FunctionCallOutputConversationItem(call_id=message.tool_call_id, output=message.text)]
 
     # content
     content = []

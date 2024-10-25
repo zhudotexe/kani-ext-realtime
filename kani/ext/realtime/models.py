@@ -63,17 +63,18 @@ ContentPart = Annotated[TextContentPart | AudioContentPart, Field(discriminator=
 class ConversationItemBase(BaseModel, abc.ABC):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     type: str
-    status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
 
 class MessageConversationItem(ConversationItemBase):
     type: Literal["message"] = "message"
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
     role: Literal["user", "assistant", "system"]
     content: list[ContentPart] = []
 
 
 class FunctionCallConversationItem(ConversationItemBase):
     type: Literal["function_call"] = "function_call"
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
     call_id: str
     name: str
     arguments: str
@@ -81,6 +82,7 @@ class FunctionCallConversationItem(ConversationItemBase):
 
 class FunctionCallOutputConversationItem(ConversationItemBase):
     type: Literal["function_call_output"] = "function_call_output"
+    call_id: str
     output: str
 
 
