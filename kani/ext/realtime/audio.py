@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import queue
+import subprocess
 import threading
 import time
 import warnings
@@ -107,6 +108,56 @@ class PyAudioAudioManager(AudioManagerBase):
 #         self.ffmpeg.stdin.flush()
 
 
+class FFMPEGAudioManager(AudioManagerBase):
+    """Audio manager using a ffplay process with a byte pipe"""
+
+    def __init__(self):
+        self.q = queue.Queue()
+        self.ffplay = None
+        self.thread = None
+
+    def play(self, segment: AudioSegment):
+        # push the segment onto the queue
+        self.q.put(segment)
+        # open the stream
+        if self.ffplay is None:
+            self.ffplay = subprocess.Popen(
+                ["ffplay", "-nodisp", "-f", "s16le", "-ar", "24000", "-acodec", "pcm_s16le", "-i", "-"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        # start the thread to handle the queue
+        if self.thread is None:
+            self.thread = threading.Thread(target=self._thread_entrypoint, daemon=True)
+            self.thread.start()
+
+    def _thread_entrypoint(self):
+        # 50ms of silence
+        # 16b frame * 24k fps = 2 * 24000 / 20 bytes = 2400B
+        silence_bytes = b"\0\0" * 2400
+        playing_until = time.perf_counter()
+        while True:
+            try:
+                # if we have a segment, write it and wait for its duration before writing more
+                segment = self.q.get(block=False)
+                self.ffplay.stdin.write(segment.raw_data)
+                self.ffplay.stdin.flush()
+                playing_until += segment.duration_seconds
+            except queue.Empty:
+                now = time.perf_counter()
+                # if we are currently playing audio, wait a bit and check if we have more to do once it's half done
+                if playing_until > now:
+                    time.sleep(max(0.05, (playing_until - now) / 2))
+                # otherwise write silence
+                else:
+                    # no lag time needed - processing should happen within 41us so the next frame is ready in time
+                    self.ffplay.stdin.write(silence_bytes)
+                    self.ffplay.stdin.flush()
+                    time.sleep(0.05)
+                    playing_until = time.perf_counter()
+
+
 class PyDubAudioManager(AudioManagerBase):
     """Fallback audio manager using pydub's default play if we don't have ffplay or pyaudio"""
 
@@ -148,24 +199,19 @@ try:
     _has_pyaudio = True
 except ImportError:
     _has_pyaudio = False
-    # # check if ffplay is available
-    # _ffplay_available = (
-    #     subprocess.run(["ffplay", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-    # )
-    # if _ffplay_available:
-    #     _global_audio_manager = FFMPEGAudioManager()
-    # else:
-    #     warnings.warn(
-    #         "You do not have PyAudio or ffmpeg installed. Playback from utilities like chat_in_terminal_audio may have"
-    #         " choppy output. We recommend installing PyAudio or ffmpeg for best performance, but it is unnecessary if"
-    #         " you are not playing audio on this machine."
-    #     )
-    warnings.warn(
-        "You do not have PyAudio installed. Playback from utilities like chat_in_terminal_audio may have choppy"
-        " output. We recommend installing PyAudio for best audio performance, but it is unnecessary if you are not"
-        ' playing audio on this machine. You can also use `pip install "kani-ext-realtime[all]"`.'
+    # check if ffplay is available
+    _ffplay_available = (
+        subprocess.run(["ffplay", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     )
-    _global_audio_manager = PyDubAudioManager()
+    if _ffplay_available:
+        _global_audio_manager = FFMPEGAudioManager()
+    else:
+        warnings.warn(
+            "You do not have PyAudio or ffmpeg installed. Playback from utilities like chat_in_terminal_audio may have"
+            " choppy output. We recommend installing PyAudio or ffmpeg for best playback performance, but it is"
+            " unnecessary if you are not playing audio on this machine."
+        )
+        _global_audio_manager = PyDubAudioManager()
 
 
 async def play_audio(audio_bytes: bytes):
