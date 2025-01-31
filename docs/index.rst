@@ -5,8 +5,6 @@ Welcome to kani-ext-realtime's documentation!
     :maxdepth: 2
 
     api_reference
-    client_events
-    server_events
     genindex
 
 

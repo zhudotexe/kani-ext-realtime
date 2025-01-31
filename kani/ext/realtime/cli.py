@@ -6,7 +6,9 @@ import os
 import sys
 from typing import Literal, overload
 
+import openai.types.beta.realtime as oait
 import rich.markup
+from easyaudiostream import get_mic_stream_async, play_raw_audio
 from kani.kani import Kani
 from kani.models import ChatRole
 from kani.streaming import StreamManager
@@ -14,9 +16,7 @@ from kani.utils.cli import format_stream, format_width, print_stream, print_widt
 from kani.utils.message_formatters import assistant_message_contents_thinking, assistant_message_thinking
 
 from . import interop
-from .audio import get_audio_stream, play_audio
 from .engine import OpenAIRealtimeKani
-from .events import client as client_events
 
 
 async def ainput(string: str) -> str:
@@ -35,7 +35,7 @@ async def _chat_in_terminal_round_stream(
     show_function_args: bool = False,
     show_function_returns: bool = False,
 ):
-    async for stream in kani.full_round_stream(query, audio_callback=play_audio):
+    async for stream in kani.full_round_stream(query, audio_callback=play_raw_audio):
         # assistant
         if stream.role == ChatRole.ASSISTANT:
             await print_stream(stream, width=width, prefix="AI: ")
@@ -65,7 +65,7 @@ async def _chat_in_terminal_round_completion(
             # play parts
             for part in msg.parts:
                 if isinstance(part, interop.AudioPart) and part.audio_b64:
-                    await play_audio(part.audio_bytes)
+                    await play_raw_audio(part.audio_bytes)
         # function
         elif msg.role == ChatRole.FUNCTION and show_function_returns:
             print_width(msg.text, width=width, prefix="FUNC: ")
@@ -90,7 +90,7 @@ async def _chat_in_terminal_full_duplex(
         ) from None
 
     # get the audio stream iterator from pyaudio
-    audio_stream = get_audio_stream(mic_id)
+    audio_stream = get_mic_stream_async(mic_id)
 
     # send all the info to a bg manager and start it
     manager = FullDuplexManager(
@@ -102,20 +102,22 @@ async def _chat_in_terminal_full_duplex(
     )
     await manager.start()
 
-    print("Listening for input from microphone...")
-
     # request an initial completion if we want it
     if ai_first:
-        await kani.session.send(client_events.ResponseCreate())
+        await kani.session.send(oait.ResponseCreateEvent(type="response.create"))
 
     # then show the live data forever
     try:
-        with Live(manager.get_display_text(), vertical_overflow="visible", auto_refresh=False) as live:
+        with Live(manager.get_display_text(), vertical_overflow="visible", auto_refresh=False, screen=True) as live:
+            rich.print("Listening for input from microphone...")
             while True:
                 live.update(manager.get_display_text(), refresh=True)
                 await asyncio.sleep(0.25)
-    except (KeyboardInterrupt, asyncio.CancelledError):
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        return
+    finally:
         await manager.close()
+        rich.print(manager.get_display_text())
 
 
 async def chat_in_terminal_audio_async(
@@ -288,7 +290,7 @@ class FullDuplexManager:
     # ===== main =====
     async def _main_task(self):
         # bg task to handle getting stream info
-        async for stream in self.kani.full_duplex(self.audio_stream, audio_callback=play_audio):
+        async for stream in self.kani.full_duplex(self.audio_stream, audio_callback=play_raw_audio):
             # for each message stream emitted by the model, spawn a task to handle it
             idx = len(self.stream_outputs)
             self.stream_outputs.append([])

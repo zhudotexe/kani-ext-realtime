@@ -2,19 +2,25 @@ import asyncio
 import base64
 import collections
 import contextlib
+import itertools
 import logging
 import os
 import warnings
-from typing import AsyncIterable, Awaitable, Callable
+from typing import Any, AsyncIterable, Callable
 
+import openai.types.beta.realtime as oait
 from kani import AIFunction, ChatMessage, ExceptionHandleResult, Kani, ToolCall
 from kani.engines.base import BaseCompletion, BaseEngine, Completion
 from kani.exceptions import FunctionCallException
 from kani.models import ChatRole, FunctionCall, QueryType
 from kani.streaming import DummyStream, StreamManager
+from openai import AsyncOpenAI as OpenAIClient
+from openai.types.beta.realtime.response_create_event import Response as ResponseCreatePayload
+from openai.types.beta.realtime.response_create_event_param import Response as ResponseCreateParams
+from typing_extensions import Unpack
 
-from . import interop, models as oaimodels
-from .events import client as client_events, server as server_events
+from . import interop
+from ._internal import ensure_async
 from .session import RealtimeSession
 
 log = logging.getLogger(__name__)
@@ -45,15 +51,18 @@ class OpenAIRealtimeKani(Kani):
         self,
         # realtime session args
         api_key: str = None,
-        model="gpt-4o-realtime-preview-2024-10-01",
+        model="gpt-4o-realtime-preview-2024-12-17",
         *,
+        organization: str = None,
+        retry: int = 5,
         ws_base: str = "wss://api.openai.com/v1/realtime",
         headers: dict = None,
+        client: OpenAIClient = None,
         # kani args
         system_prompt: str = None,
         chat_history: list[ChatMessage] = None,
         always_included_messages: list[ChatMessage] = None,
-        **generation_args,
+        **generation_args: Unpack[ResponseCreateParams],  # todo what do I do this right now it doesn't do anything
     ):
         """
         :param api_key: Your OpenAI API key. By default, the API key will be read from the `OPENAI_API_KEY` environment
@@ -72,9 +81,15 @@ class OpenAIRealtimeKani(Kani):
                 Unlike normal Kanis, due to the server-managed nature of the OpenAI realtime API, messages marked as
                 always included may not always be included by the server. These messages will instead be prepended to
                 any ``chat_history`` and *will* be included in the ``chat_history`` attribute.
+        :param organization: The OpenAI organization to use in requests. By default, the org ID would be read from the
+            `OPENAI_ORG_ID` environment variable (defaults to the API key's default org if not set).
+        :param retry: How many times the engine should retry failed HTTP calls with exponential backoff (default 5).
         :param ws_base: The base WebSocket URL to connect to (default "wss://api.openai.com/v1/realtime").
         :param headers: A dict of HTTP headers to include with each request.
-        :param client: An instance of ``httpx.AsyncClient`` (for reusing the same client in multiple engines).
+        :param client: An instance of `openai.AsyncOpenAI <https://github.com/openai/openai-python>`_
+            (for reusing the same client in multiple engines).
+            You must specify exactly one of ``(api_key, client)``. If this is passed the ``organization``, ``retry``,
+            ``api_base``, and ``headers`` params will be ignored.
         :param generation_args: The arguments to pass to the ``response.create`` call with each request. See
             https://platform.openai.com/docs/api-reference/realtime-client-events/response/create for a full list of
             params. Specifically, these arguments will be passed as the ``response`` key.
@@ -88,6 +103,7 @@ class OpenAIRealtimeKani(Kani):
         self._has_connected = False
         self._always_included_messages = always_included_messages
         self._chat_history = chat_history
+        self.generation_args = generation_args
 
         Kani.__init__(
             self,
@@ -98,33 +114,39 @@ class OpenAIRealtimeKani(Kani):
         )
         self.lock = contextlib.nullcontext()
 
-        self.session = RealtimeSession(
-            api_key=api_key, model=model, ws_base=ws_base, headers=headers, **generation_args
+        self.client = client or OpenAIClient(
+            api_key=api_key,
+            organization=organization,
+            max_retries=retry,
+            websocket_base_url=ws_base,
+            default_headers=headers,
         )
+        self.session = RealtimeSession(model=model, client=self.client)
         """The underlying state of the OpenAI Realtime API. Used for lower-level API operations."""
 
     # ===== lifecycle =====
-    async def connect(self, session_config: oaimodels.SessionConfig = None):
+    async def connect(self, **session_config: Unpack[oait.SessionCreateParams]):
         """Connect to the WS and update the internal state until the engine is closed."""
         if self._has_connected:
             raise RuntimeError("This RealtimeKani has already connected to the socket.")
-        if session_config is None:
-            # we want input_audio_transcription to be on by default - see models for default config
-            session_config = oaimodels.SessionConfig()
 
+        # set default kani kwargs
+        session_config.setdefault("input_audio_format", "pcm16")
+        session_config.setdefault("output_audio_format", "pcm16")
+        session_config.setdefault("input_audio_transcription", {"model": "whisper-1"})
+        session_config.setdefault("turn_detection", {"type": "server_vad"})
+        session_config.setdefault("tool_choice", "auto")
+
+        # connect to the WS
         self._has_connected = True
         await self.session.connect()
 
         # configure tools
-        if session_config:
-            tool_defs = session_config.tools + list(map(interop.ai_function_to_tool, self.functions.values()))
-            session_config.tools = tool_defs
-        else:
-            tool_defs = list(map(interop.ai_function_to_tool, self.functions.values()))
-            session_config = self.session.session_config.model_copy(update={"tools": tool_defs})
+        tool_defs = list(map(interop.ai_function_to_tool, self.functions.values()))
+        session_config["tools"] = list(itertools.chain(session_config.get("tools", []), tool_defs))
 
         # send session config over WS
-        await self.session.send(client_events.SessionUpdate(session=session_config))
+        await self.session.send(oait.SessionUpdateEvent(type="session.update", session=oait.Session(**session_config)))
         await self.session.wait_for("session.updated")
 
         # send chat history over ws
@@ -135,12 +157,16 @@ class OpenAIRealtimeKani(Kani):
             )
             for msg in self.always_included_messages:
                 for item in interop.chat_message_to_conv_items(msg):
-                    await self.session.send(client_events.ConversationItemCreate(item=item))
+                    await self.session.send(
+                        oait.ConversationItemCreateEvent(type="conversation.item.create", item=item)
+                    )
                     await self.session.wait_for("conversation.item.created")
         if self._chat_history:
             for msg in self._chat_history:
                 for item in interop.chat_message_to_conv_items(msg):
-                    await self.session.send(client_events.ConversationItemCreate(item=item))
+                    await self.session.send(
+                        oait.ConversationItemCreateEvent(type="conversation.item.create", item=item)
+                    )
                     await self.session.wait_for("conversation.item.created")
 
     @property
@@ -180,24 +206,33 @@ class OpenAIRealtimeKani(Kani):
         return []
 
     # ===== kani iface =====
-    async def get_model_completion(self, include_functions: bool = True, **kwargs) -> Completion:
+    # noinspection PyMethodOverriding
+    async def get_model_completion(
+        self, include_functions: bool = True, **kwargs: Unpack[ResponseCreateParams]
+    ) -> Completion:
         """Request a completion now and return it."""
         if not include_functions:
             kwargs["tool_choice"] = "none"
+        generation_kwargs = self.generation_args | kwargs
         await self.session.send(
-            client_events.ResponseCreate(response=self.session.session_config.model_copy(update=kwargs))
+            oait.ResponseCreateEvent(type="response.create", response=ResponseCreatePayload(**generation_kwargs))
         )
-        response_created_data: server_events.ResponseCreated = await self.session.wait_for("response.created")
-        response: server_events.ResponseDone = await self.session.wait_for(
+        response_created_data: oait.ResponseCreatedEvent = await self.session.wait_for("response.created")
+        response: oait.ResponseDoneEvent = await self.session.wait_for(
             "response.done", lambda e: e.response.id == response_created_data.response.id
         )
         message = interop.response_to_chat_message(response.response)
         return Completion(
-            message=message, prompt_tokens=response.usage.input_tokens, completion_tokens=response.usage.output_tokens
+            message=message,
+            prompt_tokens=response.response.usage.input_tokens,
+            completion_tokens=response.response.usage.output_tokens,
         )
 
     async def get_model_stream(
-        self, include_functions: bool = True, audio_callback: Callable[[bytes], Awaitable] = None, **kwargs
+        self,
+        include_functions: bool = True,
+        audio_callback: Callable[[bytes], Any] = None,
+        **kwargs: Unpack[ResponseCreateParams],
     ) -> AsyncIterable[str | BaseCompletion]:
         """
         Request a completion and stream from the model until the next response.done event. Only yield events from this
@@ -205,14 +240,13 @@ class OpenAIRealtimeKani(Kani):
         """
         if not include_functions:
             kwargs["tool_choice"] = "none"
-        if audio_callback is None:
+        audio_callback = ensure_async(audio_callback)
+        generation_kwargs = self.generation_args | kwargs
 
-            async def audio_callback(_):
-                pass
-
-        response_config = self.session.session_config.model_copy(update=kwargs) if self.session.session_config else None
-        await self.session.send(client_events.ResponseCreate(response=response_config))
-        response_created_data: server_events.ResponseCreated = await self.session.wait_for("response.created")
+        await self.session.send(
+            oait.ResponseCreateEvent(type="response.create", response=ResponseCreatePayload(**generation_kwargs))
+        )
+        response_created_data: oait.ResponseCreatedEvent = await self.session.wait_for("response.created")
 
         break_sentinel = object()
         completion = None
@@ -220,21 +254,19 @@ class OpenAIRealtimeKani(Kani):
 
         async def listener(e):
             match e:
-                case server_events.ResponseTextDelta(response_id=response_created_data.response.id, delta=text):
+                case oait.ResponseTextDeltaEvent(response_id=response_created_data.response.id, delta=text):
                     await q.put(text)
-                case server_events.ResponseAudioTranscriptDelta(
-                    response_id=response_created_data.response.id, delta=text
-                ):
+                case oait.ResponseAudioTranscriptDeltaEvent(response_id=response_created_data.response.id, delta=text):
                     await q.put(text)
-                case server_events.ResponseAudioDelta(response_id=response_created_data.response.id, delta=audio_b64):
+                case oait.ResponseAudioDeltaEvent(response_id=response_created_data.response.id, delta=audio_b64):
                     await audio_callback(base64.b64decode(audio_b64))
-                case server_events.ResponseDone(response=response):
+                case oait.ResponseDoneEvent(response=response):
                     message = interop.response_to_chat_message(response)
                     nonlocal completion
                     completion = Completion(
                         message=message,
-                        prompt_tokens=response.usage.input_tokens,
-                        completion_tokens=response.usage.output_tokens,
+                        prompt_tokens=response.response.usage.input_tokens,
+                        completion_tokens=response.response.usage.output_tokens,
                     )
                     await q.put(break_sentinel)
 
@@ -261,7 +293,7 @@ class OpenAIRealtimeKani(Kani):
             msg = ChatMessage.user(query)
             await self.add_to_history(msg)
             for item in interop.chat_message_to_conv_items(msg):
-                await self.session.send(client_events.ConversationItemCreate(item=item))
+                await self.session.send(oait.ConversationItemCreateEvent(type="conversation.item.create", item=item))
 
         while is_model_turn:
             # do the model prediction (stream or no stream)
@@ -288,7 +320,9 @@ class OpenAIRealtimeKani(Kani):
                 # save the result to the chat history
                 await self.add_to_history(result.message)
                 for item in interop.chat_message_to_conv_items(result.message):
-                    await self.session.send(client_events.ConversationItemCreate(item=item))
+                    await self.session.send(
+                        oait.ConversationItemCreateEvent(type="conversation.item.create", item=item)
+                    )
 
                     # yield it, possibly in dummy streammanager
                     if _kani_is_stream:
@@ -338,7 +372,7 @@ class OpenAIRealtimeKani(Kani):
     async def full_duplex(
         self,
         audio_stream: AsyncIterable[bytes],  # todo what about manual response creates
-        audio_callback: Callable[[bytes], Awaitable] = None,
+        audio_callback: Callable[[bytes], Any] = None,
         **kwargs,  # todo this might be a good place for session config too?
     ) -> AsyncIterable[StreamManager]:
         """
@@ -355,7 +389,8 @@ class OpenAIRealtimeKani(Kani):
 
             async def handle_stream(stream):
                 # do processing for a single message's stream here...
-                # this example code does NOT account for multiple simultaneous messages
+                # this example code does NOT account for printing multiple concurrent message streams
+                # it simply prints tokens as they are received
                 async for token in stream:
                     print(token, end="")
                 msg = await stream.message()
@@ -379,28 +414,24 @@ class OpenAIRealtimeKani(Kani):
 
         .. note::
             For lower-level control over the realtime chat session (e.g. to send events directly to the server), see
-            :class:`.RealtimeSession` and :mod:`.events.client`. For example, you might use the following to request a
+            :class:`.RealtimeSession`. For example, you might use the following to request a
             response when serverside VAD is disabled:
 
             .. code-block:: python
 
-                from kani.ext.realtime import events
+                import openai.types.beta.realtime as oait
 
-                await ai.session.send(events.client.ResponseCreate())
+                await ai.session.send(oait.ResponseCreateEvent(type="response.create"))
 
             See https://platform.openai.com/docs/api-reference/realtime-client-events for more details.
 
         :param audio_stream: An async iterator that emits audio frames (bytes). Audio frames should be encoded as
-            raw 16 bit PCM audio at 24kHz, 1 channel, little-endian. See :func:`.get_audio_stream` to get such an
-            audio stream from a system microphone.
-        :param audio_callback: An async function that consumes audio frames as emitted by the model. Use
-            :func:`.play_audio` to play the audio from the system speaker.
+            raw 16 bit PCM audio at 24kHz, 1 channel, little-endian. You can use
+            ``easyaudiostream.get_mic_stream_async()`` to get such a stream.
+        :param audio_callback: An async function that consumes audio frames as emitted by the model. You can use
+            ``easyaudiostream.play_raw_audio()`` to play audio over the system speakers.
         """
-        if audio_callback is None:
-
-            async def audio_callback(_):
-                pass
-
+        audio_callback = ensure_async(audio_callback)
         break_sentinel = object()
         # streamer for item with given ID reads elements from their q, stored here
         streamer_queues = collections.defaultdict(asyncio.Queue)
@@ -420,22 +451,22 @@ class OpenAIRealtimeKani(Kani):
             match e:
                 # ===== new conversation item =====
                 # we only care about messages here - function calls are handled elsewhere
-                case server_events.ConversationItemCreated(
-                    item=oaimodels.MessageConversationItem(id=item_id, role=role)
+                case oait.ConversationItemCreatedEvent(
+                    item=oait.ConversationItem(type="message", id=item_id, role=role)
                 ):
                     streamer_q = streamer_queues[item_id]
                     await yielder_q.put(StreamManager(yield_from_queue(streamer_q), role=ChatRole(role)))
                 # ===== streaming items (asst) =====
-                case server_events.ResponseTextDelta(
+                case oait.ResponseTextDeltaEvent(item_id=item_id, delta=text) | oait.ResponseAudioTranscriptDeltaEvent(
                     item_id=item_id, delta=text
-                ) | server_events.ResponseAudioTranscriptDelta(item_id=item_id, delta=text):
+                ):
                     await streamer_queues[item_id].put(text)
-                case server_events.ResponseDone(response=response):
+                case oait.ResponseDoneEvent(response=response):
                     message = interop.response_to_chat_message(response)
                     completion = Completion(
                         message=message,
-                        prompt_tokens=response.usage.input_tokens,
-                        completion_tokens=response.usage.output_tokens,
+                        prompt_tokens=response.response.usage.input_tokens,
+                        completion_tokens=response.response.usage.output_tokens,
                     )
                     for item_id in set(i.id for i in response.output if i.type == "message"):
                         q = streamer_queues[item_id]
@@ -443,11 +474,11 @@ class OpenAIRealtimeKani(Kani):
                         await q.put(break_sentinel)
                         streamer_queues.pop(item_id)
                 # ===== streaming items (user) =====
-                case server_events.ConversationItemInputAudioTranscriptionCompleted(item_id=item_id, transcript=text):
+                case oait.ConversationItemInputAudioTranscriptionCompletedEvent(item_id=item_id, transcript=text):
                     await streamer_queues[item_id].put(text.strip())
                     # emit a completion too
                     item = self.session.conversation_items.get(item_id)
-                    assert isinstance(item, oaimodels.MessageConversationItem)
+                    assert item.type == "message"
                     role = ChatRole(item.role)
                     content = list(map(interop.content_part_to_message_part, item.content))
                     message = ChatMessage(role=role, content=content)
@@ -456,12 +487,12 @@ class OpenAIRealtimeKani(Kani):
                     await streamer_queues[item_id].put(break_sentinel)
                     streamer_queues.pop(item_id)
                 # ===== audio =====
-                case server_events.ResponseAudioDelta(delta=audio_b64):
+                case oait.ResponseAudioDeltaEvent(delta=audio_b64):
                     await audio_callback(base64.b64decode(audio_b64))
                 # ===== function calling =====
-                case server_events.ResponseOutputItemDone(
-                    item=oaimodels.FunctionCallConversationItem(
-                        status="completed", call_id=call_id, name=name, arguments=args
+                case oait.ResponseOutputItemDoneEvent(
+                    item=oait.ConversationItem(
+                        type="function_call", status="completed", call_id=call_id, name=name, arguments=args
                     )
                 ):
                     tc = ToolCall.from_function_call(FunctionCall(name=name, arguments=args), call_id)
@@ -473,16 +504,18 @@ class OpenAIRealtimeKani(Kani):
                     # save the result to the chat history
                     await self.add_to_history(result.message)
                     for item in interop.chat_message_to_conv_items(result.message):
-                        await self.session.send(client_events.ConversationItemCreate(item=item))
+                        await self.session.send(
+                            oait.ConversationItemCreateEvent(type="conversation.item.create", item=item)
+                        )
                         await yielder_q.put(DummyStream(result.message))
                     # request a new completion
-                    await self.session.send(client_events.ResponseCreate())
+                    await self.session.send(oait.ResponseCreateEvent(type="response.create"))
 
         # audio sender
         async def audio_sender_task():
             async for frame in audio_stream:
                 data = base64.b64encode(frame).decode()
-                await self.session.send(client_events.InputAudioBufferAppend(audio=data))
+                await self.session.send(oait.InputAudioBufferAppendEvent(type="input_audio_buffer.append", audio=data))
             # when we are out of audio, tell the outer loop to break
             await yielder_q.put(break_sentinel)
 
