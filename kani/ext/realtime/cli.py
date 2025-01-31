@@ -108,7 +108,7 @@ async def _chat_in_terminal_full_duplex(
 
     # then show the live data forever
     try:
-        with Live(manager.get_display_text(), vertical_overflow="visible", auto_refresh=False, screen=True) as live:
+        with Live(manager.get_display_text(), auto_refresh=False, screen=True) as live:
             rich.print("Listening for input from microphone...")
             while True:
                 live.update(manager.get_display_text(), refresh=True)

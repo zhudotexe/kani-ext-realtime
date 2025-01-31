@@ -2,6 +2,7 @@ import asyncio
 import json
 from typing import Annotated
 
+import d20
 import httpx
 from kani import AIParam, ai_function
 from kani.ext.realtime import OpenAIRealtimeKani
@@ -44,11 +45,16 @@ class MyRealtimeKani(OpenAIRealtimeKani):
         resp = await self.wikipedia_client.get("/", params={"action": "opensearch", "format": "json", "search": query})
         return json.dumps(resp.json()[1])
 
+    @ai_function()
+    def roll(self, dice: str):
+        """Roll some dice in XdY notation. Math and complex operators like kh3 are supported."""
+        return d20.roll(dice).result
+
 
 async def test():
     ai = MyRealtimeKani()
     await ai.connect()
-    await chat_in_terminal_audio_async(ai, mode="full_duplex", mic_id=0, show_function_args=True)
+    await chat_in_terminal_audio_async(ai, mode="full_duplex", mic_id=0, verbose=True)
 
 
 if __name__ == "__main__":

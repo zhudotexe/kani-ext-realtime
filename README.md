@@ -1,6 +1,8 @@
 # kani-ext-realtime
 
-This repository adds the OpenAIRealtimeKani.
+This repository adds the OpenAIRealtimeKani. Function calling works right out of the box!
+
+<img src="/docs/_static/demo.mp4" width="500"/>
 
 This package is considered provisional and maintained on a best-effort basis. As such, it will not be released on
 PyPI.
