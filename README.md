@@ -2,7 +2,7 @@
 
 This repository adds the OpenAIRealtimeKani. Function calling works right out of the box!
 
-<img src="/docs/_static/demo.mp4" width="500"/>
+https://github.com/user-attachments/assets/64aa852b-e97a-4d48-b092-e5b672a97e0f
 
 This package is considered provisional and maintained on a best-effort basis. As such, it will not be released on
 PyPI.
