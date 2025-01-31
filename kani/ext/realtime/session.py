@@ -119,6 +119,9 @@ class RealtimeSession:
                         log.exception("Exception when handling WS event:")
         except asyncio.CancelledError:
             return
+        except Exception:
+            log.exception("Exception when connecting to the websocket:")
+            raise
         finally:
             self._ws_connected.clear()
             self._conn = None

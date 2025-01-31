@@ -15,7 +15,6 @@ from kani.exceptions import FunctionCallException
 from kani.models import ChatRole, FunctionCall, QueryType
 from kani.streaming import DummyStream, StreamManager
 from openai import AsyncOpenAI as OpenAIClient
-from openai.types.beta.realtime.response_create_event import Response as ResponseCreatePayload
 from openai.types.beta.realtime.response_create_event_param import Response as ResponseCreateParams
 from typing_extensions import Unpack
 
@@ -55,7 +54,7 @@ class OpenAIRealtimeKani(Kani):
         *,
         organization: str = None,
         retry: int = 5,
-        ws_base: str = "wss://api.openai.com/v1/realtime",
+        ws_base: str = "wss://api.openai.com/v1",
         headers: dict = None,
         client: OpenAIClient = None,
         # kani args
@@ -146,7 +145,9 @@ class OpenAIRealtimeKani(Kani):
         session_config["tools"] = list(itertools.chain(session_config.get("tools", []), tool_defs))
 
         # send session config over WS
-        await self.session.send(oait.SessionUpdateEvent(type="session.update", session=oait.Session(**session_config)))
+        await self.session.send(
+            oait.SessionUpdateEvent.model_validate({"type": "session.update", "session": session_config})
+        )
         await self.session.wait_for("session.updated")
 
         # send chat history over ws
@@ -215,7 +216,7 @@ class OpenAIRealtimeKani(Kani):
             kwargs["tool_choice"] = "none"
         generation_kwargs = self.generation_args | kwargs
         await self.session.send(
-            oait.ResponseCreateEvent(type="response.create", response=ResponseCreatePayload(**generation_kwargs))
+            oait.ResponseCreateEvent.model_validate({"type": "response.create", "response": generation_kwargs})
         )
         response_created_data: oait.ResponseCreatedEvent = await self.session.wait_for("response.created")
         response: oait.ResponseDoneEvent = await self.session.wait_for(
@@ -244,7 +245,7 @@ class OpenAIRealtimeKani(Kani):
         generation_kwargs = self.generation_args | kwargs
 
         await self.session.send(
-            oait.ResponseCreateEvent(type="response.create", response=ResponseCreatePayload(**generation_kwargs))
+            oait.ResponseCreateEvent.model_validate({"type": "response.create", "response": generation_kwargs})
         )
         response_created_data: oait.ResponseCreatedEvent = await self.session.wait_for("response.created")
 
