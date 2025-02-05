@@ -33,6 +33,40 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+## Programmatic Usage
+
+```python
+import asyncio
+
+from kani.ext.realtime import OpenAIRealtimeKani, chat_in_terminal_audio_async
+
+
+async def handle_stream(stream):
+    # do processing for a single message's stream here...
+    # this example code does NOT account for multiple simultaneous messages
+    async for token in stream:
+        print(token, end="")
+    msg = await stream.message()
+
+
+async def main():
+    ai = OpenAIRealtimeKani()  # note - the OpenAIRealtimeKani does *not* take an engine!
+    await ai.connect()  # additional step needed to connect to the Realtime API
+
+    stream_tasks = set()
+
+    async for stream in ai.full_duplex(audio_stream):
+        task = asyncio.create_task(handle_stream(stream))
+        # to keep a live reference to the task
+        # see https://docs.python.org/3/library/asyncio-task.html#creating-tasks
+        stream_tasks.add(task)
+        task.add_done_callback(stream_tasks.discard)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
 The OpenAIRealtimeKani is compatible with most standard kani interfaces -- you can, for example:
 
 - Define `@ai_function`s which the realtime model will call (by subclassing `OpenAIRealtimeKani`)
