@@ -189,8 +189,20 @@ class OpenAIRealtimeKani(Kani):
     def chat_history(self):
         if not self._has_connected:
             return self._chat_history
-        # todo read chat items from session
+        # read chat items from session, grouping by responses (model output group or user input)
+        history = []
+        for resp_id, item_ids in itertools.groupby(
+            self.session.conversation_item_order,
+            key=lambda i: self.session.conversation_item_id_to_response_id.get(i.id),
+        ):
+            if resp_id is not None:
+                history.append(interop.response_to_chat_message(self.session.responses[resp_id]))
+            else:
+                history.extend(
+                    interop.conv_items_to_chat_message([self.session.conversation_items[iid]]) for iid in item_ids
+                )
         # todo return immutable
+        return history
 
     @chat_history.setter
     def chat_history(self, value):
@@ -469,6 +481,7 @@ class OpenAIRealtimeKani(Kani):
                         prompt_tokens=response.response.usage.input_tokens,
                         completion_tokens=response.response.usage.output_tokens,
                     )
+                    await self.add_completion_to_history(completion)
                     for item_id in set(i.id for i in response.output if i.type == "message"):
                         q = streamer_queues[item_id]
                         await q.put(completion)
@@ -483,6 +496,7 @@ class OpenAIRealtimeKani(Kani):
                     role = ChatRole(item.role)
                     content = list(map(interop.content_part_to_message_part, item.content))
                     message = ChatMessage(role=role, content=content)
+                    await self.add_to_history(message)
                     completion = Completion(message=message, prompt_tokens=0, completion_tokens=0)
                     await streamer_queues[item_id].put(completion)
                     await streamer_queues[item_id].put(break_sentinel)

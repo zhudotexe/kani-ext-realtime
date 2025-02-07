@@ -34,6 +34,8 @@ class RealtimeSession:
         self.conversation_id: str | None = None
         self.responses: dict[str, oait.RealtimeResponse] = {}
         self.conversation_items: dict[str, oait.ConversationItem] = {}
+        self.conversation_item_order: list[str] = []
+        self.conversation_item_id_to_response_id: dict[str, str] = {}  # for grouping conversation items from 1 response
 
         # ws
         self._conn: AsyncRealtimeConnection | None = None
@@ -163,6 +165,15 @@ class RealtimeSession:
     async def _handle_conversation_item_created(self, event: oait.ConversationItemCreatedEvent):
         item_id = event.item.id
         self.conversation_items[item_id] = event.item
+        if not event.previous_item_id:
+            self.conversation_item_order.append(item_id)
+        else:
+            try:
+                previous_item_idx = self.conversation_item_order.index(event.previous_item_id)
+            except ValueError:
+                self.conversation_item_order.append(item_id)
+            else:
+                self.conversation_item_order.insert(previous_item_idx + 1, item_id)
 
     @server_event_handler("conversation.item.input_audio_transcription.completed")
     async def _handle_conversation_item_input_audio_transcription_completed(
@@ -208,12 +219,14 @@ class RealtimeSession:
         self.responses[event.response.id] = event.response
         for item in event.response.output:
             self.conversation_items[item.id] = item
+            self.conversation_item_id_to_response_id[item.id] = event.response.id
 
     @server_event_handler("response.done")
     async def _handle_response_done(self, event: oait.ResponseDoneEvent):
         self.responses[event.response.id] = event.response
         for item in event.response.output:
             self.conversation_items[item.id] = item
+            self.conversation_item_id_to_response_id[item.id] = event.response.id
 
     @server_event_handler("rate_limits.updated")
     async def _handle_rate_limits_updated(self, event: oait.RateLimitsUpdatedEvent):

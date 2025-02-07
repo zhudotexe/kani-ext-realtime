@@ -41,22 +41,34 @@ def content_part_to_message_part(part: oait.ConversationItemContent) -> MessageP
     raise ValueError(f"Unknown content part: {part!r}")
 
 
-def response_to_chat_message(response: oait.RealtimeResponse) -> ChatMessage:
+def conv_items_to_chat_message(conv_items: list[oait.ConversationItem]) -> ChatMessage:
+    # this takes a list because ASST messages can have tool calls as separate item in a single response
     out_role = None
     out_content = []
     out_tool_calls = []
-    for item in response.output:
+    out_kwargs = {}
+    for item in conv_items:
         match item:
             case oait.ConversationItem(type="function_call", call_id=call_id, name=name, arguments=args):
                 out_tool_calls.append(ToolCall.from_function_call(FunctionCall(name=name, arguments=args), call_id))
-            case oait.ConversationItem(role=role, content=content):
+            case oait.ConversationItem(type="function_call_output", call_id=call_id, output=output):
+                out_role = ChatRole.FUNCTION
+                out_kwargs["tool_call_id"] = call_id
+                out_content.append(output)
+            case oait.ConversationItem(type="message", role=role, content=content):
                 if out_role is not None and out_role != role:
                     raise ValueError(f"Got 2 different message roles in response: {out_role}, {role}")
                 out_role = ChatRole(role)
                 out_content.extend(map(content_part_to_message_part, content))
             case other:
                 raise ValueError(f"A response shouldn't have this but it did: {other!r}")
-    return ChatMessage(role=out_role or ChatRole.ASSISTANT, content=out_content, tool_calls=out_tool_calls)
+    return ChatMessage(
+        role=out_role or ChatRole.ASSISTANT, content=out_content, tool_calls=out_tool_calls, **out_kwargs
+    )
+
+
+def response_to_chat_message(response: oait.RealtimeResponse) -> ChatMessage:
+    return conv_items_to_chat_message(response.output)
 
 
 # ---- kani -> oai ----
