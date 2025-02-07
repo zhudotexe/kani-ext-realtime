@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import itertools
 import logging
 from typing import Any, Awaitable, Callable
 
@@ -16,17 +18,19 @@ log = logging.getLogger(__name__)
 class RealtimeSession:
     """This is an internal object used to manage the state of the OpenAI Realtime session."""
 
-    def __init__(self, model: str, client: AsyncOpenAI):
+    def __init__(self, model: str, client: AsyncOpenAI, *, save_audio=True):
         """
         :param model: The id of the realtime model to use.
         :param client: The OpenAI client to use.
-        :param generation_args: The arguments to pass to the ``response.create`` call with each request. See
-            https://platform.openai.com/docs/api-reference/realtime-client-events/response/create for a full list of
-            params. Specifically, these arguments will be passed as the ``response`` key.
+        :param save_audio: Whether to keep audio data in memory.
         """
         # client config
         self.model = model
         self.client = client
+        self.save_audio = save_audio
+
+        # audio buffer
+        self.input_audio_buffer = bytearray()
 
         # state
         self.session_config: oait.Session | None = None
@@ -71,6 +75,12 @@ class RealtimeSession:
         log.debug(f">>> {event!r}")
         await self._conn.send(event)
 
+    async def input_audio_buffer_append(self, frame: bytes):
+        if self.save_audio:
+            self.input_audio_buffer.extend(frame)
+        data = base64.b64encode(frame).decode()
+        await self.send(oait.InputAudioBufferAppendEvent(type="input_audio_buffer.append", audio=data))
+
     # ==== events ====
     def add_listener(self, callback: Callable[[RealtimeServerEvent], Awaitable[Any]]):
         """
@@ -112,7 +122,13 @@ class RealtimeSession:
                         # process our event first, always
                         await self._handle_server_event(event)
                         # get listeners, call them - listeners can use the result of the processing if needed
-                        await asyncio.gather(*(callback(event) for callback in self.listeners), return_exceptions=True)
+                        results = await asyncio.gather(
+                            *(callback(event) for callback in self.listeners), return_exceptions=True
+                        )
+                        # log any exceptions
+                        for r in results:
+                            if isinstance(r, BaseException):
+                                log.exception("Exception when handling WS event:", exc_info=r)
                     except websockets.ConnectionClosedError as e:
                         log.error(f"WS connection closed unexpectedly: {e}")
                     except asyncio.CancelledError:
@@ -157,10 +173,28 @@ class RealtimeSession:
         self.session_id = event.session.id
         self.session_config = event.session
 
+    # input_audio_buffer
+    @server_event_handler("input_audio_buffer.committed")
+    async def _handle_input_audio_buffer_committed(self, event: oait.InputAudioBufferCommittedEvent):
+        pass  # todo create an in progress item id?
+
+    @server_event_handler("input_audio_buffer.cleared")
+    async def _handle_input_audio_buffer_cleared(self, event: oait.InputAudioBufferClearedEvent):
+        pass
+
+    @server_event_handler("input_audio_buffer.speech_started")
+    async def _handle_input_audio_buffer_speech_started(self, event: oait.InputAudioBufferSpeechStartedEvent):
+        pass  # todo create an in progress item id?
+
+    @server_event_handler("input_audio_buffer.speech_stopped")
+    async def _handle_input_audio_buffer_speech_stopped(self, event: oait.InputAudioBufferSpeechStoppedEvent):
+        pass  # todo end an in progress item id?
+
     @server_event_handler("conversation.created")
     async def _handle_conversation_created(self, event: oait.ConversationCreatedEvent):
         self.conversation_id = event.conversation.id
 
+    # conversation.item
     @server_event_handler("conversation.item.created")
     async def _handle_conversation_item_created(self, event: oait.ConversationItemCreatedEvent):
         item_id = event.item.id
@@ -198,22 +232,7 @@ class RealtimeSession:
     async def _handle_conversation_item_deleted(self, event: oait.ConversationItemDeletedEvent):
         self.conversation_items.pop(event.item_id, None)
 
-    @server_event_handler("input_audio_buffer.committed")
-    async def _handle_input_audio_buffer_committed(self, event: oait.InputAudioBufferCommittedEvent):
-        pass  # todo create an in progress item id?
-
-    @server_event_handler("input_audio_buffer.cleared")
-    async def _handle_input_audio_buffer_cleared(self, event: oait.InputAudioBufferClearedEvent):
-        pass
-
-    @server_event_handler("input_audio_buffer.speech_started")
-    async def _handle_input_audio_buffer_speech_started(self, event: oait.InputAudioBufferSpeechStartedEvent):
-        pass  # todo create an in progress item id?
-
-    @server_event_handler("input_audio_buffer.speech_stopped")
-    async def _handle_input_audio_buffer_speech_stopped(self, event: oait.InputAudioBufferSpeechStoppedEvent):
-        pass  # todo end an in progress item id?
-
+    # response
     @server_event_handler("response.created")
     async def _handle_response_created(self, event: oait.ResponseCreatedEvent):
         self.responses[event.response.id] = event.response
@@ -221,11 +240,36 @@ class RealtimeSession:
             self.conversation_items[item.id] = item
             self.conversation_item_id_to_response_id[item.id] = event.response.id
 
+    @server_event_handler("response.content_part.added")
+    async def _handle_response_content_part_added(self, event: oait.ResponseContentPartAddedEvent):
+        item = self.conversation_items.get(event.item_id)
+        if item is None:
+            log.warning(f"Got response.content_part.added event referencing item that does not exist: {event.item_id}")
+            return
+        if event.content_index < len(item.content):
+            log.warning(f"Got response.content_part.added event but item content might be out of order!")
+            log.debug(item)
+            log.debug(event)
+            return
+        # noinspection PyTypeChecker
+        # for some reason oait.ConversationItemContent doesn't believe in type="audio", but that's what we get
+        item.content.append(event.part)
+
+    @server_event_handler("response.audio.delta")
+    async def _handle_response_audio_delta(self, event: oait.ResponseAudioDeltaEvent):
+        if not self.save_audio:
+            return
+        content = self.get_item_content(event.item_id, event.content_index)
+        if content.audio is None:
+            content.audio = event.delta
+        else:
+            content.audio += event.delta
+
     @server_event_handler("response.done")
     async def _handle_response_done(self, event: oait.ResponseDoneEvent):
         self.responses[event.response.id] = event.response
         for item in event.response.output:
-            self.conversation_items[item.id] = item
+            self.conversation_items[item.id] = merge_conversation_items(item, self.conversation_items.get(item.id))
             self.conversation_item_id_to_response_id[item.id] = event.response.id
 
     @server_event_handler("rate_limits.updated")
@@ -233,7 +277,7 @@ class RealtimeSession:
         pass  # todo
 
     # ==== helpers ====
-    def get_item_content(self, item_id: str, content_index: int):
+    def get_item_content(self, item_id: str, content_index: int) -> oait.ConversationItemContent | None:
         item = self.conversation_items.get(item_id)
         if item is None:
             log.warning(f"Got event referencing item that does not exist: {item_id}")
@@ -244,3 +288,26 @@ class RealtimeSession:
             )
             return
         return item.content[content_index]
+
+
+def merge_conversation_items(new: oait.ConversationItem, old: oait.ConversationItem) -> oait.ConversationItem:
+    """
+    Merge the final conversation item (i.e. *new* yielded by the server) with the partial cached by the client.
+    This is needed because the server does not emit the final audio in the final conversation item.
+    """
+    if new.id != old.id:
+        raise ValueError("Cannot merge conversation items with differing IDs.")
+    # the only thing that really needs a merge is the content
+    new.content = [merge_conversation_item_contents(n, o) for n, o in itertools.zip_longest(new.content, old.content)]
+    return new
+
+
+def merge_conversation_item_contents(
+    new: oait.ConversationItemContent, old: oait.ConversationItemContent | None
+) -> oait.ConversationItemContent:
+    if old is None:
+        return new
+    # copy audio from old if new doesn't have it
+    if not new.audio and old.audio:
+        new.audio = old.audio
+    return new

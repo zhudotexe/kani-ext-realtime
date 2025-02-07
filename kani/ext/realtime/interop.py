@@ -5,6 +5,7 @@ import base64
 import openai.types.beta.realtime as oait
 from kani import AIFunction, ChatMessage, ChatRole, FunctionCall, MessagePart, ToolCall
 from openai.types.beta.realtime.session_create_params import Tool
+from pydantic import Field
 
 
 class TextPart(MessagePart):
@@ -17,8 +18,8 @@ class TextPart(MessagePart):
 
 class AudioPart(MessagePart):
     oai_type: str
-    audio_b64: str | None
-    transcript: str
+    audio_b64: str | None = Field(repr=False)
+    transcript: str | None
 
     @property
     def audio_bytes(self) -> bytes | None:
@@ -28,6 +29,14 @@ class AudioPart(MessagePart):
 
     def __str__(self):
         return self.transcript
+
+    def __repr__(self):
+        if self.audio_b64 is None:
+            audio_repr = "None"
+        else:
+            audio_duration = len(self.audio_bytes) / 48000
+            audio_repr = f"[audio: {audio_duration:.3f}s]"
+        return f'{self.__repr_name__()}({self.__repr_str__(", ")}, audio_b64={audio_repr})'
 
 
 # ===== translators =====

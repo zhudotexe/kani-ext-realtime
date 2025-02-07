@@ -193,7 +193,7 @@ class OpenAIRealtimeKani(Kani):
         history = []
         for resp_id, item_ids in itertools.groupby(
             self.session.conversation_item_order,
-            key=lambda i: self.session.conversation_item_id_to_response_id.get(i.id),
+            key=lambda i: self.session.conversation_item_id_to_response_id.get(i),
         ):
             if resp_id is not None:
                 history.append(interop.response_to_chat_message(self.session.responses[resp_id]))
@@ -478,8 +478,8 @@ class OpenAIRealtimeKani(Kani):
                     message = interop.response_to_chat_message(response)
                     completion = Completion(
                         message=message,
-                        prompt_tokens=response.response.usage.input_tokens,
-                        completion_tokens=response.response.usage.output_tokens,
+                        prompt_tokens=response.usage.input_tokens,
+                        completion_tokens=response.usage.output_tokens,
                     )
                     await self.add_completion_to_history(completion)
                     for item_id in set(i.id for i in response.output if i.type == "message"):
@@ -529,8 +529,7 @@ class OpenAIRealtimeKani(Kani):
         # audio sender
         async def audio_sender_task():
             async for frame in audio_stream:
-                data = base64.b64encode(frame).decode()
-                await self.session.send(oait.InputAudioBufferAppendEvent(type="input_audio_buffer.append", audio=data))
+                await self.session.input_audio_buffer_append(frame)
             # when we are out of audio, tell the outer loop to break
             await yielder_q.put(break_sentinel)
 
