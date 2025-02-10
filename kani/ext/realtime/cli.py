@@ -108,16 +108,15 @@ async def _chat_in_terminal_full_duplex(
 
     # then show the live data forever
     try:
-        with Live(manager.get_display_text(), auto_refresh=False, screen=True) as live:
+        with Live(manager.get_display_text(), auto_refresh=False, vertical_overflow="visible") as live:
             rich.print("Listening for input from microphone...")
             while True:
                 live.update(manager.get_display_text(), refresh=True)
-                await asyncio.sleep(0.25)
+                await manager.has_new_display()
     except (asyncio.CancelledError, KeyboardInterrupt):
         return
     finally:
         await manager.close()
-        rich.print(manager.get_display_text())
 
 
 async def chat_in_terminal_audio_async(
@@ -276,6 +275,7 @@ class FullDuplexManager:
 
         self.stream_tasks = set()
         self.stream_outputs = []
+        self._has_new_display_event = asyncio.Event()
 
         self.main_task = None
 
@@ -328,6 +328,13 @@ class FullDuplexManager:
             output_buffer.clear()
             output_buffer.append(format_width(msg.text, width=self.width, prefix="USER: "))
 
+        self._has_new_display_event.set()
+
     def get_display_text(self):
         text = "\n".join("".join(part for part in output) for output in self.stream_outputs)
         return rich.markup.escape(text)
+
+    async def has_new_display(self):
+        """Wait until there is new display text."""
+        await self._has_new_display_event.wait()
+        self._has_new_display_event.clear()
