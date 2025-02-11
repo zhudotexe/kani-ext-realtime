@@ -198,6 +198,8 @@ class RealtimeSession:
             del self.input_audio_buffer[:end_idx]
         else:
             committed_audio_b64 = base64.b64encode(self.input_audio_buffer).decode()
+            self._input_audio_buffer_offset += len(self.input_audio_buffer) // 48
+            self.input_audio_buffer.clear()
         self._last_speech_started = self._last_speech_stopped = None
 
         # in a task, wait for the conversation.item.created event that corresponds to this
