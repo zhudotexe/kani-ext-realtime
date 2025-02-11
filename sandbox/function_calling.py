@@ -4,6 +4,7 @@ from typing import Annotated
 
 import d20
 import httpx
+import rich
 from easyaudiostream import list_mics
 from kani import AIParam, ai_function
 from kani.ext.realtime import OpenAIRealtimeKani
@@ -56,7 +57,7 @@ async def test(mic_id):
     ai = MyRealtimeKani()
     await ai.connect(voice="ballad")
     await chat_in_terminal_audio_async(ai, mode="full_duplex", mic_id=mic_id, verbose=True)
-    print(ai.chat_history)
+    rich.print(ai.chat_history)
 
 
 if __name__ == "__main__":

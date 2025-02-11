@@ -36,16 +36,27 @@ class AudioPart(MessagePart):
         else:
             audio_duration = len(self.audio_bytes) / 48000
             audio_repr = f"[audio: {audio_duration:.3f}s]"
-        return f'{self.__repr_name__()}({self.__repr_str__(", ")}, audio_b64={audio_repr})'
+        return f'{self.__repr_name__()}({self.__repr_str__(", ")}, audio={audio_repr})'
+
+    def __rich_repr__(self):
+        if self.audio_b64 is None:
+            audio_repr = "None"
+        else:
+            audio_duration = len(self.audio_bytes) / 48000
+            audio_repr = f"[audio: {audio_duration:.3f}s]"
+
+        yield "oai_type", self.oai_type
+        yield "transcript", self.transcript
+        yield "audio", audio_repr
 
 
 # ===== translators =====
 # ---- oai -> kani ----
 def content_part_to_message_part(part: oait.ConversationItemContent) -> MessagePart:
-    match part:
-        case oait.ConversationItemContent(type="input_text" | "text" as oai_type, text=text):
+    match part.model_dump():  # can be a Part sometimes which borks things
+        case {"type": "input_text" | "text" as oai_type, "text": text}:
             return TextPart(oai_type=oai_type, text=text)
-        case oait.ConversationItemContent(type="input_audio" | "audio" as oai_type, audio=audio, transcript=transcript):
+        case {"type": "input_audio" | "audio" as oai_type, "audio": audio, "transcript": transcript}:
             return AudioPart(oai_type=oai_type, audio_b64=audio, transcript=transcript)
     raise ValueError(f"Unknown content part: {part!r}")
 

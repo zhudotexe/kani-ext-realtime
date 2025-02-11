@@ -67,3 +67,13 @@ def ensure_async(f, run_sync_in_executor=False):
                 return original(*args, **kwargs)
 
     return f
+
+
+_global_bg_tasks = set()
+
+
+def create_task(coro):
+    """Helper with bookkeeping to prevent errant GCs."""
+    task = asyncio.create_task(coro)
+    _global_bg_tasks.add(task)
+    task.add_done_callback(_global_bg_tasks.discard)

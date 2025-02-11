@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 from openai.resources.beta.realtime.realtime import AsyncRealtimeConnection
 from openai.types.beta.realtime import RealtimeClientEvent, RealtimeServerEvent
 
-from ._internal import get_server_event_handlers, server_event_handler
+from ._internal import create_task, get_server_event_handlers, server_event_handler
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +31,8 @@ class RealtimeSession:
 
         # audio buffer
         self.input_audio_buffer = bytearray()
+        self._last_speech_started = None
+        self._last_speech_stopped = None
 
         # state
         self.session_config: oait.Session | None = None
@@ -176,19 +178,50 @@ class RealtimeSession:
     # input_audio_buffer
     @server_event_handler("input_audio_buffer.committed")
     async def _handle_input_audio_buffer_committed(self, event: oait.InputAudioBufferCommittedEvent):
-        pass  # todo create an in progress item id?
+        if not self.save_audio:
+            return
+
+        # save a copy of the committed audio
+        # if we're in VAD mode, we've received timestamps to slice the buffer
+        # otherwise assume we just sent the whole buffer
+        if (
+            self._last_speech_started is not None
+            and self._last_speech_stopped is not None
+            and self._last_speech_stopped > self._last_speech_started
+        ):
+            # 24kHz * 2B samples = 48KBps -> 48 bytes/ms
+            start_idx = self._last_speech_started * 48
+            end_idx = self._last_speech_stopped * 48
+            committed_audio_b64 = base64.b64encode(self.input_audio_buffer[start_idx:end_idx]).decode()
+        else:
+            committed_audio_b64 = base64.b64encode(self.input_audio_buffer).decode()
+        self.input_audio_buffer.clear()
+        self._last_speech_started = self._last_speech_stopped = None
+
+        # in a task, wait for the conversation.item.created event that corresponds to this
+        async def _wait_for_conv_item():
+            await self.wait_for("conversation.item.created", lambda e: e.item.id == event.item_id, timeout=10)
+            # item = self.conversation_items.get(event.item_id)
+            # content = next(c for c in item.content if c.type == "input_audio")  # can probably do content 0?
+            content = self.get_item_content(event.item_id, 0)
+            if content.audio is None:
+                content.audio = committed_audio_b64
+            else:
+                content.audio += committed_audio_b64
+
+        create_task(_wait_for_conv_item())
 
     @server_event_handler("input_audio_buffer.cleared")
-    async def _handle_input_audio_buffer_cleared(self, event: oait.InputAudioBufferClearedEvent):
-        pass
+    async def _handle_input_audio_buffer_cleared(self, _: oait.InputAudioBufferClearedEvent):
+        self.input_audio_buffer.clear()
 
     @server_event_handler("input_audio_buffer.speech_started")
     async def _handle_input_audio_buffer_speech_started(self, event: oait.InputAudioBufferSpeechStartedEvent):
-        pass  # todo create an in progress item id?
+        self._last_speech_started = event.audio_start_ms
 
     @server_event_handler("input_audio_buffer.speech_stopped")
     async def _handle_input_audio_buffer_speech_stopped(self, event: oait.InputAudioBufferSpeechStoppedEvent):
-        pass  # todo end an in progress item id?
+        self._last_speech_started = event.audio_end_ms
 
     @server_event_handler("conversation.created")
     async def _handle_conversation_created(self, event: oait.ConversationCreatedEvent):
