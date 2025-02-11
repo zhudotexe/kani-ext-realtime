@@ -33,6 +33,7 @@ class RealtimeSession:
         self.input_audio_buffer = bytearray()
         self._last_speech_started = None
         self._last_speech_stopped = None
+        self._input_audio_buffer_offset = 0  # the ms the input audio buffer in memory starts at from the server's view
 
         # state
         self.session_config: oait.Session | None = None
@@ -190,12 +191,13 @@ class RealtimeSession:
             and self._last_speech_stopped > self._last_speech_started
         ):
             # 24kHz * 2B samples = 48KBps -> 48 bytes/ms
-            start_idx = self._last_speech_started * 48
-            end_idx = self._last_speech_stopped * 48
+            start_idx = (self._last_speech_started - self._input_audio_buffer_offset) * 48
+            end_idx = (self._last_speech_stopped - self._input_audio_buffer_offset) * 48
             committed_audio_b64 = base64.b64encode(self.input_audio_buffer[start_idx:end_idx]).decode()
+            self._input_audio_buffer_offset = self._last_speech_stopped
+            del self.input_audio_buffer[:end_idx]
         else:
             committed_audio_b64 = base64.b64encode(self.input_audio_buffer).decode()
-        self.input_audio_buffer.clear()
         self._last_speech_started = self._last_speech_stopped = None
 
         # in a task, wait for the conversation.item.created event that corresponds to this
@@ -221,7 +223,7 @@ class RealtimeSession:
 
     @server_event_handler("input_audio_buffer.speech_stopped")
     async def _handle_input_audio_buffer_speech_stopped(self, event: oait.InputAudioBufferSpeechStoppedEvent):
-        self._last_speech_started = event.audio_end_ms
+        self._last_speech_stopped = event.audio_end_ms
 
     @server_event_handler("conversation.created")
     async def _handle_conversation_created(self, event: oait.ConversationCreatedEvent):
