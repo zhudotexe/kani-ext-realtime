@@ -18,8 +18,8 @@ class TextPart(MessagePart):
 
 class AudioPart(MessagePart):
     oai_type: str
-    audio_b64: str | None = Field(repr=False)
     transcript: str | None
+    audio_b64: str | None = Field(repr=False)
 
     @property
     def audio_bytes(self) -> bytes | None:
