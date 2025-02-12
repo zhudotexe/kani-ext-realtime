@@ -335,8 +335,8 @@ def merge_conversation_items(new: oait.ConversationItem, old: oait.ConversationI
     if new.id != old.id:
         raise ValueError("Cannot merge conversation items with differing IDs.")
     # the only thing that really needs a merge is the content
-    new.content = [merge_conversation_item_contents(n, o) for n, o in itertools.zip_longest(new.content, old.content)]
-    return new
+    new_content = [merge_conversation_item_contents(n, o) for n, o in itertools.zip_longest(new.content, old.content)]
+    return new.model_copy(update={"content": new_content})
 
 
 def merge_conversation_item_contents(
@@ -345,6 +345,7 @@ def merge_conversation_item_contents(
     if old is None:
         return new
     # copy audio from old if new doesn't have it
+    new_data = {}
     if not new.audio and old.audio:
-        new.audio = old.audio
-    return new
+        new_data["audio"] = old.audio
+    return new.model_copy(update=new_data)
