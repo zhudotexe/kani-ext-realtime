@@ -132,6 +132,8 @@ class RealtimeSession:
                         for r in results:
                             if isinstance(r, BaseException):
                                 log.exception("Exception when handling WS event:", exc_info=r)
+                    except NoPropagate:
+                        continue
                     except websockets.ConnectionClosedError as e:
                         log.error(f"WS connection closed unexpectedly: {e}")
                     except asyncio.CancelledError:
@@ -304,6 +306,13 @@ class RealtimeSession:
 
     @server_event_handler("response.done")
     async def _handle_response_done(self, event: oait.ResponseDoneEvent):
+        # weird server-side thing where it can send cancelled after completed
+        if (
+            event.response.status == "cancelled"
+            and event.response.id in self.responses
+            and self.responses[event.response.id].status == "completed"
+        ):
+            raise NoPropagate
         self.responses[event.response.id] = event.response
         for item in event.response.output:
             self.conversation_items[item.id] = merge_conversation_items(item, self.conversation_items.get(item.id))
@@ -334,8 +343,15 @@ def merge_conversation_items(new: oait.ConversationItem, old: oait.ConversationI
     """
     if new.id != old.id:
         raise ValueError("Cannot merge conversation items with differing IDs.")
-    # the only thing that really needs a merge is the content
-    new_content = [merge_conversation_item_contents(n, o) for n, o in itertools.zip_longest(new.content, old.content)]
+    if old.content is None:
+        return new
+    elif new.content is None:
+        new_content = old.content
+    else:
+        # the only thing that really needs a merge is the content
+        new_content = [
+            merge_conversation_item_contents(n, o) for n, o in itertools.zip_longest(new.content, old.content)
+        ]
     return new.model_copy(update={"content": new_content})
 
 
@@ -349,3 +365,7 @@ def merge_conversation_item_contents(
     if not new.audio and old.audio:
         new_data["audio"] = old.audio
     return new.model_copy(update=new_data)
+
+
+class NoPropagate(Exception):
+    """Do not send this event to other listeners -- it is a serverside behavioural error."""

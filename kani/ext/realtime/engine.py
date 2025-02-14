@@ -475,6 +475,8 @@ class OpenAIRealtimeKani(Kani):
                 ):
                     await streamer_queues[item_id].put(text)
                 case oait.ResponseDoneEvent(response=response):
+                    if response.status == "cancelled" and not response.output:
+                        return
                     message = interop.response_to_chat_message(response)
                     completion = Completion(
                         message=message,
