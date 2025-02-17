@@ -278,8 +278,8 @@ class OpenAIRealtimeKani(Kani):
                     nonlocal completion
                     completion = Completion(
                         message=message,
-                        prompt_tokens=response.response.usage.input_tokens,
-                        completion_tokens=response.response.usage.output_tokens,
+                        prompt_tokens=response.usage.input_tokens,
+                        completion_tokens=response.usage.output_tokens,
                     )
                     await q.put(break_sentinel)
 
