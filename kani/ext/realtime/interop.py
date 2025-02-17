@@ -28,7 +28,7 @@ class AudioPart(MessagePart):
         return base64.b64decode(self.audio_b64)
 
     def __str__(self):
-        return self.transcript
+        return self.transcript if self.transcript is not None else ""
 
     def __repr__(self):
         if self.audio_b64 is None:
