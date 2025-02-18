@@ -1,6 +1,9 @@
 import asyncio
 import functools
 import inspect
+import random
+import string
+import time
 from typing import Any, Awaitable, Callable
 
 from openai.types.beta.realtime import RealtimeServerEvent
@@ -77,3 +80,20 @@ def create_task(coro):
     task = asyncio.create_task(coro)
     _global_bg_tasks.add(task)
     task.add_done_callback(_global_bg_tasks.discard)
+
+
+def create_id(prefix: str = ""):
+    """
+    Create a random ID. If *prefix* is specified, prefix the ID with that string.
+    IDs will be at most 32 characters long, including prefix.
+    Format: [prefix-]<timestampb64>-<random>
+    """
+    timestamp = str(int(time.time()))
+    random_padding = "".join((random.choice(string.ascii_letters) for _ in range(30 - len(timestamp) - len(prefix))))
+    if prefix:
+        candidate = f"{prefix}-{timestamp}-{random_padding}"
+    else:
+        candidate = f"{timestamp}-{random_padding}"
+    if len(candidate) > 32:
+        return candidate[:32]
+    return candidate

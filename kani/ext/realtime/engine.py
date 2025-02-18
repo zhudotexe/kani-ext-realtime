@@ -61,7 +61,7 @@ class OpenAIRealtimeKani(Kani):
         system_prompt: str = None,
         chat_history: list[ChatMessage] = None,
         always_included_messages: list[ChatMessage] = None,
-        **generation_args: Unpack[ResponseCreateParams],  # todo what do I do this right now it doesn't do anything
+        **generation_args: Unpack[ResponseCreateParams],
     ):
         """
         :param api_key: Your OpenAI API key. By default, the API key will be read from the `OPENAI_API_KEY` environment
@@ -92,6 +92,11 @@ class OpenAIRealtimeKani(Kani):
         :param generation_args: The arguments to pass to the ``response.create`` call with each request. See
             https://platform.openai.com/docs/api-reference/realtime-client-events/response/create for a full list of
             params. Specifically, these arguments will be passed as the ``response`` key.
+
+            .. warning::
+                This will only affect direct model queries (i.e., through :meth:`.chat_round` or :meth:`.full_round`) --
+                these args will not affect the :meth:`.full_duplex` behaviour. Pass configuration options to
+                :meth:`.connect` instead for full duplex configuration.
         """
 
         if headers is None:
@@ -157,18 +162,10 @@ class OpenAIRealtimeKani(Kani):
                 " not always be included by the server."
             )
             for msg in self.always_included_messages:
-                for item in interop.chat_message_to_conv_items(msg):
-                    await self.session.send(
-                        oait.ConversationItemCreateEvent(type="conversation.item.create", item=item)
-                    )
-                    await self.session.wait_for("conversation.item.created")
+                await self.session.conversation_item_create_from_chat_message(msg)
         if self._chat_history:
             for msg in self._chat_history:
-                for item in interop.chat_message_to_conv_items(msg):
-                    await self.session.send(
-                        oait.ConversationItemCreateEvent(type="conversation.item.create", item=item)
-                    )
-                    await self.session.wait_for("conversation.item.created")
+                await self.session.conversation_item_create_from_chat_message(msg)
 
     @property
     def is_connected(self):
@@ -227,9 +224,7 @@ class OpenAIRealtimeKani(Kani):
         if not include_functions:
             kwargs["tool_choice"] = "none"
         generation_kwargs = self.generation_args | kwargs
-        await self.session.send(
-            oait.ResponseCreateEvent.model_validate({"type": "response.create", "response": generation_kwargs})
-        )
+        await self.session.response_create(**generation_kwargs)
         response_created_data: oait.ResponseCreatedEvent = await self.session.wait_for("response.created")
         response: oait.ResponseDoneEvent = await self.session.wait_for(
             "response.done", lambda e: e.response.id == response_created_data.response.id
@@ -256,9 +251,7 @@ class OpenAIRealtimeKani(Kani):
         audio_callback = ensure_async(audio_callback)
         generation_kwargs = self.generation_args | kwargs
 
-        await self.session.send(
-            oait.ResponseCreateEvent.model_validate({"type": "response.create", "response": generation_kwargs})
-        )
+        await self.session.response_create(**generation_kwargs)
         response_created_data: oait.ResponseCreatedEvent = await self.session.wait_for("response.created")
 
         break_sentinel = object()
@@ -305,8 +298,7 @@ class OpenAIRealtimeKani(Kani):
         if query is not None:
             msg = ChatMessage.user(query)
             await self.add_to_history(msg)
-            for item in interop.chat_message_to_conv_items(msg):
-                await self.session.send(oait.ConversationItemCreateEvent(type="conversation.item.create", item=item))
+            await self.session.conversation_item_create_from_chat_message(msg)
 
         while is_model_turn:
             # do the model prediction (stream or no stream)
@@ -332,16 +324,13 @@ class OpenAIRealtimeKani(Kani):
             for result in results:
                 # save the result to the chat history
                 await self.add_to_history(result.message)
-                for item in interop.chat_message_to_conv_items(result.message):
-                    await self.session.send(
-                        oait.ConversationItemCreateEvent(type="conversation.item.create", item=item)
-                    )
+                await self.session.conversation_item_create_from_chat_message(result.message)
 
-                    # yield it, possibly in dummy streammanager
-                    if _kani_is_stream:
-                        yield DummyStream(result.message)
-                    else:
-                        yield result.message
+                # yield it, possibly in dummy streammanager
+                if _kani_is_stream:
+                    yield DummyStream(result.message)
+                else:
+                    yield result.message
 
                 if isinstance(result, ExceptionHandleResult):
                     is_model_turn = True
@@ -520,13 +509,10 @@ class OpenAIRealtimeKani(Kani):
                     result = await self._do_tool_call(tc, 0)
                     # save the result to the chat history
                     await self.add_to_history(result.message)
-                    for item in interop.chat_message_to_conv_items(result.message):
-                        await self.session.send(
-                            oait.ConversationItemCreateEvent(type="conversation.item.create", item=item)
-                        )
-                        await yielder_q.put(DummyStream(result.message))
+                    await self.session.conversation_item_create_from_chat_message(result.message)
+                    await yielder_q.put(DummyStream(result.message))
                     # request a new completion
-                    await self.session.send(oait.ResponseCreateEvent(type="response.create"))
+                    await self.session.response_create()
 
         # audio sender
         async def audio_sender_task():

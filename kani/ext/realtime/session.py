@@ -2,7 +2,7 @@ import asyncio
 import base64
 import itertools
 import logging
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, TYPE_CHECKING
 
 import openai.types.beta.realtime as oait
 import websockets
@@ -10,7 +10,13 @@ from openai import AsyncOpenAI
 from openai.resources.beta.realtime.realtime import AsyncRealtimeConnection
 from openai.types.beta.realtime import RealtimeClientEvent, RealtimeServerEvent
 
-from ._internal import create_task, get_server_event_handlers, server_event_handler
+from . import interop
+from ._internal import create_id, create_task, get_server_event_handlers, server_event_handler
+
+if TYPE_CHECKING:
+    from kani.models import ChatMessage
+    from openai.types.beta.realtime.response_create_event_param import Response as ResponseCreateParams
+    from typing_extensions import Unpack
 
 log = logging.getLogger(__name__)
 
@@ -78,11 +84,28 @@ class RealtimeSession:
         log.debug(f">>> {event!r}")
         await self._conn.send(event)
 
+    # ---- high level iface ----
     async def input_audio_buffer_append(self, frame: bytes):
         if self.save_audio:
             self.input_audio_buffer.extend(frame)
         data = base64.b64encode(frame).decode()
         await self.send(oait.InputAudioBufferAppendEvent(type="input_audio_buffer.append", audio=data))
+
+    async def conversation_item_create_from_chat_message(self, message: "ChatMessage"):
+        for item in interop.chat_message_to_conv_items(message):
+            item_id = create_id("item")
+            item.id = item_id
+            await self.send(oait.ConversationItemCreateEvent(type="conversation.item.create", item=item))
+            if self.save_audio:
+                # wait for confirmation and add audio bytes if we're logging
+                created_event = await self.wait_for("conversation.item.created", lambda e: e.item.id == item_id)
+                created_item = created_event.item
+                self.conversation_items[created_item.id] = merge_conversation_items(created_item, item)
+
+    async def response_create(self, **generation_kwargs: Unpack["ResponseCreateParams"]):
+        await self.send(
+            oait.ResponseCreateEvent.model_validate({"type": "response.create", "response": generation_kwargs})
+        )
 
     # ==== events ====
     def add_listener(self, callback: Callable[[RealtimeServerEvent], Awaitable[Any]]):
