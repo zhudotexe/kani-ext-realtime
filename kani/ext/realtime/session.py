@@ -9,6 +9,7 @@ import websockets
 from openai import AsyncOpenAI
 from openai.resources.beta.realtime.realtime import AsyncRealtimeConnection
 from openai.types.beta.realtime import RealtimeClientEvent, RealtimeServerEvent
+from typing_extensions import Unpack
 
 from . import interop
 from ._internal import create_id, create_task, get_server_event_handlers, server_event_handler
@@ -16,7 +17,6 @@ from ._internal import create_id, create_task, get_server_event_handlers, server
 if TYPE_CHECKING:
     from kani.models import ChatMessage
     from openai.types.beta.realtime.response_create_event_param import Response as ResponseCreateParams
-    from typing_extensions import Unpack
 
 log = logging.getLogger(__name__)
 
