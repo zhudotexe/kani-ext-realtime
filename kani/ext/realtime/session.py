@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import enum
 import itertools
 import logging
 from typing import Any, Awaitable, Callable, TYPE_CHECKING
@@ -19,6 +20,12 @@ if TYPE_CHECKING:
     from openai.types.beta.realtime.response_create_event_param import Response as ResponseCreateParams
 
 log = logging.getLogger(__name__)
+
+
+class ConnectionState(enum.Enum):
+    DISCONNECTED = "disconnected"
+    CONNECTING = "connecting"
+    CONNECTED = "connected"
 
 
 class RealtimeSession:
@@ -52,9 +59,11 @@ class RealtimeSession:
 
         # ws
         self._conn: AsyncRealtimeConnection | None = None
-        self._ws_connected = asyncio.Event()
+        self.connection_state: ConnectionState = ConnectionState.DISCONNECTED
+        self._ws_connected: asyncio.Future | None = None
         self._session_created = asyncio.Event()
         self.listeners = []
+        self.lifecycle_listeners = []
         self.ws_task = None
 
         # event handlers
@@ -68,17 +77,30 @@ class RealtimeSession:
         You should usually call :meth:`.OpenAIRealtimeKani.connect` instead of this.
         """
         if self.ws_task is None:
+            self._ws_connected = asyncio.get_running_loop().create_future()
             self.ws_task = asyncio.create_task(self._ws_task(), name="realtime-ws")
-        await self._ws_connected.wait()
+        await self._ws_connected
         await self._session_created.wait()
 
     async def close(self):
         if self.ws_task is not None:
             self.ws_task.cancel()  # closes on cancel
 
+    async def _set_connection_state(self, new_state: ConnectionState):
+        log.debug(f"New connection state: {new_state}")
+        self.connection_state = new_state
+        results = await asyncio.gather(
+            *(callback(new_state) for callback in self.lifecycle_listeners), return_exceptions=True
+        )
+        for r in results:
+            if isinstance(r, BaseException):
+                log.exception("Exception when handling lifecycle event:", exc_info=r)
+
     # ==== iface ====
     async def send(self, event: RealtimeClientEvent):
         """Send a client event to the websocket."""
+        if self.connection_state == ConnectionState.CONNECTING:
+            await self._ws_connected
         if self._conn is None:
             raise RuntimeError("Websocket is not yet initialized - call connect() first")
         log.debug(f">>> {event!r}")
@@ -119,6 +141,17 @@ class RealtimeSession:
         """Remove a listener added by :meth:`add_listener`."""
         self.listeners.remove(callback)
 
+    def add_lifecycle_listener(self, callback: Callable[[ConnectionState], Awaitable[Any]]):
+        """
+        Add a listener which is called for WS lifecycle changes.
+        The listener must be an asynchronous function that takes in the new connection state in a single argument.
+        """
+        self.lifecycle_listeners.append(callback)
+
+    def remove_lifecycle_listener(self, callback):
+        """Remove a listener added by :meth:`add_lifecycle_listener`."""
+        self.lifecycle_listeners.remove(callback)
+
     async def wait_for(
         self, event_type: str, predicate: Callable[[RealtimeServerEvent], bool] = None, timeout: int = 60
     ) -> RealtimeServerEvent:
@@ -139,8 +172,10 @@ class RealtimeSession:
     async def _ws_task(self):
         """Main websocket receive loop."""
         try:
+            await self._set_connection_state(ConnectionState.CONNECTING)
             async with self.client.beta.realtime.connect(model=self.model) as self._conn:
-                self._ws_connected.set()
+                await self._set_connection_state(ConnectionState.CONNECTED)
+                self._ws_connected.set_result(True)
                 async for event in self._conn:
                     # noinspection PyBroadException
                     try:
@@ -159,18 +194,16 @@ class RealtimeSession:
                         continue
                     except websockets.ConnectionClosedError as e:
                         log.error(f"WS connection closed unexpectedly: {e}")
-                    except asyncio.CancelledError:
-                        return
                     except Exception:
                         log.exception("Exception when handling WS event:")
-        except asyncio.CancelledError:
-            return
-        except Exception:
+        except Exception as e:
             log.exception("Exception when connecting to the websocket:")
+            self._ws_connected.set_exception(e)
             raise
         finally:
-            self._ws_connected.clear()
             self._conn = None
+            await self._set_connection_state(ConnectionState.DISCONNECTED)
+            self.ws_task = None
 
     # ==== ws event handlers ====
     async def _handle_server_event(self, event: RealtimeServerEvent):
@@ -189,6 +222,9 @@ class RealtimeSession:
     @server_event_handler("error")
     async def _handle_error(self, event: oait.ErrorEvent):
         log.error(event.error)
+        if event.error.code == "session_expired":
+            # close the WS - this will emit a DISCONNECTED lifecycle event and kill ws_task
+            await self._conn.close()
 
     @server_event_handler("session.created")
     async def _handle_session_created(self, event: oait.SessionCreatedEvent):

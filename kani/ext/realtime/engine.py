@@ -20,7 +20,7 @@ from typing_extensions import Unpack
 
 from . import interop
 from ._internal import ensure_async
-from .session import RealtimeSession
+from .session import ConnectionState, RealtimeSession
 
 log = logging.getLogger(__name__)
 
@@ -104,19 +104,9 @@ class OpenAIRealtimeKani(Kani):
         if api_key is None:
             api_key = os.getenv("OPENAI_API_KEY")
 
-        self._has_connected = False
         self._always_included_messages = always_included_messages
         self._chat_history = chat_history
         self.generation_args = generation_args
-
-        Kani.__init__(
-            self,
-            engine=DummyEngine(),
-            system_prompt=system_prompt,
-            always_included_messages=always_included_messages,
-            chat_history=chat_history,
-        )
-        self.lock = contextlib.nullcontext()
 
         self.client = client or OpenAIClient(
             api_key=api_key,
@@ -128,10 +118,19 @@ class OpenAIRealtimeKani(Kani):
         self.session = RealtimeSession(model=model, client=self.client)
         """The underlying state of the OpenAI Realtime API. Used for lower-level API operations."""
 
+        Kani.__init__(
+            self,
+            engine=DummyEngine(),
+            system_prompt=system_prompt,
+            always_included_messages=always_included_messages,
+            chat_history=chat_history,
+        )
+        self.lock = contextlib.nullcontext()
+
     # ===== lifecycle =====
     async def connect(self, **session_config: Unpack[oait.SessionCreateParams]):
         """Connect to the WS and update the internal state until the engine is closed."""
-        if self._has_connected:
+        if self.is_connected:
             raise RuntimeError("This RealtimeKani has already connected to the socket.")
 
         # set default kani kwargs
@@ -142,7 +141,6 @@ class OpenAIRealtimeKani(Kani):
         session_config.setdefault("tool_choice", "auto")
 
         # connect to the WS
-        self._has_connected = True
         await self.session.connect()
 
         # configure tools
@@ -169,7 +167,10 @@ class OpenAIRealtimeKani(Kani):
 
     @property
     def is_connected(self):
-        return self._has_connected
+        return (
+            self.session.connection_state == ConnectionState.CONNECTED
+            or self.session.connection_state == ConnectionState.CONNECTING
+        )
 
     # ===== weird overrides =====
     @property
@@ -178,32 +179,20 @@ class OpenAIRealtimeKani(Kani):
 
     @always_included_messages.setter
     def always_included_messages(self, value):
-        if self._has_connected:
+        if self.is_connected:
             raise ValueError("The chat history cannot be directly modified after connecting to the WS.")
         self._always_included_messages = value
 
     @property
     def chat_history(self):
-        if not self._has_connected:
+        if not self.is_connected:
             return self._chat_history
         # read chat items from session, grouping by responses (model output group or user input)
-        history = []
-        for resp_id, item_ids in itertools.groupby(
-            self.session.conversation_item_order,
-            key=lambda i: self.session.conversation_item_id_to_response_id.get(i),
-        ):
-            if resp_id is not None:
-                history.append(interop.response_to_chat_message(self.session.responses[resp_id]))
-            else:
-                history.extend(
-                    interop.conv_items_to_chat_message([self.session.conversation_items[iid]]) for iid in item_ids
-                )
-        # todo return immutable
-        return history
+        return interop.chat_history_from_session_state(self.session)
 
     @chat_history.setter
     def chat_history(self, value):
-        if self._has_connected:
+        if self.is_connected:
             raise ValueError("The chat history cannot be directly modified after connecting to the WS.")
         self._chat_history = value
 

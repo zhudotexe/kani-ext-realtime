@@ -1,11 +1,16 @@
 """Translation between Kani models and OpenAI models"""
 
 import base64
+import itertools
+from typing import TYPE_CHECKING
 
 import openai.types.beta.realtime as oait
 from kani import AIFunction, ChatMessage, ChatRole, FunctionCall, MessagePart, ToolCall
 from openai.types.beta.realtime.session_create_params import Tool
 from pydantic import Field
+
+if TYPE_CHECKING:
+    from .session import RealtimeSession
 
 
 class TextPart(MessagePart):
@@ -89,6 +94,22 @@ def conv_items_to_chat_message(conv_items: list[oait.ConversationItem]) -> ChatM
 
 def response_to_chat_message(response: oait.RealtimeResponse) -> ChatMessage:
     return conv_items_to_chat_message(response.output)
+
+
+def chat_history_from_session_state(session: "RealtimeSession"):
+    """Given a session, get the chat history from cached responses."""
+    # read chat items from session, grouping by responses (model output group or user input)
+    history = []
+    for resp_id, item_ids in itertools.groupby(
+        session.conversation_item_order,
+        key=lambda i: session.conversation_item_id_to_response_id.get(i),
+    ):
+        if resp_id is not None:
+            history.append(response_to_chat_message(session.responses[resp_id]))
+        else:
+            history.extend(conv_items_to_chat_message([session.conversation_items[iid]]) for iid in item_ids)
+    # todo return immutable
+    return history
 
 
 # ---- kani -> oai ----
