@@ -7,8 +7,6 @@ import sys
 from typing import Literal, overload
 
 import openai.types.beta.realtime as oait
-import rich.markup
-from easyaudiostream import get_mic_stream_async, play_raw_audio
 from kani.kani import Kani
 from kani.models import ChatRole
 from kani.streaming import StreamManager
@@ -35,6 +33,14 @@ async def _chat_in_terminal_round_stream(
     show_function_args: bool = False,
     show_function_returns: bool = False,
 ):
+    try:
+        from easyaudiostream import play_raw_audio
+    except ImportError:
+        raise ImportError(
+            "You must install easyaudiostream and rich to use the built-in full duplex mode. You can install these"
+            ' dependencies with `pip install "kani-ext-realtime[all]"`.'
+        ) from None
+
     async for stream in kani.full_round_stream(query, audio_callback=play_raw_audio):
         # assistant
         if stream.role == ChatRole.ASSISTANT:
@@ -57,6 +63,14 @@ async def _chat_in_terminal_round_completion(
     show_function_args: bool = False,
     show_function_returns: bool = False,
 ):
+    try:
+        from easyaudiostream import play_raw_audio
+    except ImportError:
+        raise ImportError(
+            "You must install easyaudiostream and rich to use the built-in full duplex mode. You can install these"
+            ' dependencies with `pip install "kani-ext-realtime[all]"`.'
+        ) from None
+
     async for msg in kani.full_round(query):
         # assistant
         if msg.role == ChatRole.ASSISTANT:
@@ -81,14 +95,14 @@ async def _chat_in_terminal_full_duplex(
     mic_id: int | None = None,
 ):
     try:
+        import rich
         from rich.live import Live
-        import pyaudio
+        from easyaudiostream import get_mic_stream_async, play_raw_audio
     except ImportError:
         raise ImportError(
-            "You must install PyAudio and rich to use the built-in full duplex mode. You can install these dependencies"
-            ' with `pip install "kani-ext-realtime[all]"`.'
+            "You must install easyaudiostream and rich to use the built-in full duplex mode. You can install these"
+            ' dependencies with `pip install "kani-ext-realtime[all]"`.'
         ) from None
-
     # get the audio stream iterator from pyaudio
     audio_stream = get_mic_stream_async(mic_id)
 
@@ -331,6 +345,8 @@ class FullDuplexManager:
         self._has_new_display_event.set()
 
     def get_display_text(self):
+        import rich.markup
+
         text = "\n".join("".join(part for part in output) for output in self.stream_outputs)
         return rich.markup.escape(text)
 
