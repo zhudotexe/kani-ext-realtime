@@ -154,16 +154,19 @@ class OpenAIRealtimeKani(Kani):
         await self.session.wait_for("session.updated")
 
         # send chat history over ws
+        history_to_upload = []
         if self.always_included_messages:
             warnings.warn(
                 "Due to the server-managed nature of the OpenAI realtime API, messages marked as always included may"
                 " not always be included by the server."
             )
-            for msg in self.always_included_messages:
-                await self.session.conversation_item_create_from_chat_message(msg)
+            history_to_upload.extend(self.always_included_messages)
         if self._chat_history:
-            for msg in self._chat_history:
-                await self.session.conversation_item_create_from_chat_message(msg)
+            history_to_upload.extend(self._chat_history)
+
+        for idx, msg in enumerate(history_to_upload):
+            log.debug(f"Uploading conversation history item {idx} / {len(history_to_upload)}")
+            await self.session.conversation_item_create_from_chat_message(msg)
 
     @property
     def is_connected(self):

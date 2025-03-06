@@ -105,9 +105,12 @@ def chat_history_from_session_state(session: "RealtimeSession"):
         key=lambda i: session.conversation_item_id_to_response_id.get(i),
     ):
         if resp_id is not None:
-            history.append(response_to_chat_message(session.responses[resp_id]))
+            msgs = [response_to_chat_message(session.responses[resp_id])]
         else:
-            history.extend(conv_items_to_chat_message([session.conversation_items[iid]]) for iid in item_ids)
+            msgs = [conv_items_to_chat_message([session.conversation_items[iid]]) for iid in item_ids]
+        # only add the message to history if it has any content - this can happen if we have a responsecreate but no
+        # content yet
+        history.extend(m for m in msgs if m.content)
     # todo return immutable
     return history
 
@@ -117,6 +120,7 @@ def chat_message_to_conv_items(message: ChatMessage) -> list[oait.ConversationIt
     if message.role == ChatRole.FUNCTION:
         return [oait.ConversationItem(type="function_call_output", call_id=message.tool_call_id, output=message.text)]
 
+    items = []
     # content
     content = []
     for part in message.parts:
@@ -133,8 +137,8 @@ def chat_message_to_conv_items(message: ChatMessage) -> list[oait.ConversationIt
                 content.append(oait.ConversationItemContent(type=oai_type, audio=audio, transcript=transcript))
             case _:
                 raise ValueError(f"Unknown content part: {part!r}")
-
-    items = [oait.ConversationItem(type="message", role=message.role.value, content=content)]
+    if content:
+        items.append(oait.ConversationItem(type="message", role=message.role.value, content=content))
 
     # tool calls
     if message.tool_calls:

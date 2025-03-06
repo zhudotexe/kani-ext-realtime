@@ -26,6 +26,7 @@ class ConnectionState(enum.Enum):
     DISCONNECTED = "disconnected"
     CONNECTING = "connecting"
     CONNECTED = "connected"
+    TERMINATING = "terminating"  # special case for when the program is terminating
 
 
 class RealtimeSession:
@@ -171,6 +172,7 @@ class RealtimeSession:
 
     async def _ws_task(self):
         """Main websocket receive loop."""
+        is_terminating = False
         try:
             await self._set_connection_state(ConnectionState.CONNECTING)
             async with self.client.beta.realtime.connect(model=self.model) as self._conn:
@@ -196,13 +198,19 @@ class RealtimeSession:
                         log.error(f"WS connection closed unexpectedly: {e}")
                     except Exception:
                         log.exception("Exception when handling WS event:")
+        except asyncio.CancelledError:
+            # the ws loop was cancelled explicitly, so we are shutting down
+            is_terminating = True
+            raise
         except Exception as e:
             log.exception("Exception when connecting to the websocket:")
             self._ws_connected.set_exception(e)
             raise
         finally:
             self._conn = None
-            await self._set_connection_state(ConnectionState.DISCONNECTED)
+            await self._set_connection_state(
+                ConnectionState.DISCONNECTED if not is_terminating else ConnectionState.TERMINATING
+            )
             self.ws_task = None
 
     # ==== ws event handlers ====
