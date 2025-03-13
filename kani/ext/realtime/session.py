@@ -56,7 +56,6 @@ class RealtimeSession:
         self.responses: dict[str, oait.RealtimeResponse] = {}
         self.conversation_items: dict[str, oait.ConversationItem] = {}
         self.conversation_item_order: list[str] = []
-        self.conversation_item_id_to_response_id: dict[str, str] = {}  # for grouping conversation items from 1 response
 
         # ws
         self._conn: AsyncRealtimeConnection | None = None
@@ -119,9 +118,9 @@ class RealtimeSession:
             item_id = create_id("item")
             item.id = item_id
             await self.send(oait.ConversationItemCreateEvent(type="conversation.item.create", item=item))
+            # wait for confirmation and add audio bytes if we're logging
+            created_event = await self.wait_for("conversation.item.created", lambda e: e.item.id == item_id)
             if self.save_audio:
-                # wait for confirmation and add audio bytes if we're logging
-                created_event = await self.wait_for("conversation.item.created", lambda e: e.item.id == item_id)
                 created_item = created_event.item
                 self.conversation_items[created_item.id] = merge_conversation_items(created_item, item)
 
@@ -344,7 +343,6 @@ class RealtimeSession:
         self.responses[event.response.id] = event.response
         for item in event.response.output:
             self.conversation_items[item.id] = item
-            self.conversation_item_id_to_response_id[item.id] = event.response.id
 
     @server_event_handler("response.content_part.added")
     async def _handle_response_content_part_added(self, event: oait.ResponseContentPartAddedEvent):
@@ -383,7 +381,6 @@ class RealtimeSession:
         self.responses[event.response.id] = event.response
         for item in event.response.output:
             self.conversation_items[item.id] = merge_conversation_items(item, self.conversation_items.get(item.id))
-            self.conversation_item_id_to_response_id[item.id] = event.response.id
 
     @server_event_handler("rate_limits.updated")
     async def _handle_rate_limits_updated(self, event: oait.RateLimitsUpdatedEvent):

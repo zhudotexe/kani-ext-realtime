@@ -98,19 +98,23 @@ def response_to_chat_message(response: oait.RealtimeResponse) -> ChatMessage:
 
 def chat_history_from_session_state(session: "RealtimeSession"):
     """Given a session, get the chat history from cached responses."""
+
+    def _is_asst_or_func_call(item_id):
+        item = session.conversation_items[item_id]
+        return (item.type == "message" and item.role == "assistant") or (item.type == "function_call")
+
     # read chat items from session, grouping by responses (model output group or user input)
     history = []
-    for resp_id, item_ids in itertools.groupby(
-        session.conversation_item_order,
-        key=lambda i: session.conversation_item_id_to_response_id.get(i),
-    ):
-        if resp_id is not None:
-            msgs = [response_to_chat_message(session.responses[resp_id])]
+    for is_asst_or_func_call, item_ids in itertools.groupby(session.conversation_item_order, key=_is_asst_or_func_call):
+        if is_asst_or_func_call:
+            # group all the items together as a single message
+            msgs = [conv_items_to_chat_message([session.conversation_items[iid] for iid in item_ids])]
         else:
+            # make a message for each item
             msgs = [conv_items_to_chat_message([session.conversation_items[iid]]) for iid in item_ids]
-        # only add the message to history if it has any content - this can happen if we have a responsecreate but no
-        # content yet
-        history.extend(m for m in msgs if m.content)
+        # only add the message to history if it has any content or tool call
+        # this can happen if we have a responsecreate but no content yet
+        history.extend(m for m in msgs if m.content or m.tool_calls)
     # todo return immutable
     return history
 
