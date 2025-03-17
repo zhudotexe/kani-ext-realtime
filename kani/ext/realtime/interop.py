@@ -32,6 +32,12 @@ class AudioPart(MessagePart):
             return None
         return base64.b64decode(self.audio_b64)
 
+    @property
+    def audio_duration(self) -> float:
+        if self.audio_b64 is None:
+            return 0.0
+        return len(self.audio_bytes) / 48000
+
     def __str__(self):
         return self.transcript if self.transcript is not None else ""
 
@@ -39,16 +45,14 @@ class AudioPart(MessagePart):
         if self.audio_b64 is None:
             audio_repr = "None"
         else:
-            audio_duration = len(self.audio_bytes) / 48000
-            audio_repr = f"[audio: {audio_duration:.3f}s]"
+            audio_repr = f"[audio: {self.audio_duration:.3f}s]"
         return f'{self.__repr_name__()}({self.__repr_str__(", ")}, audio={audio_repr})'
 
     def __rich_repr__(self):
         if self.audio_b64 is None:
             audio_repr = "None"
         else:
-            audio_duration = len(self.audio_bytes) / 48000
-            audio_repr = f"[audio: {audio_duration:.3f}s]"
+            audio_repr = f"[audio: {self.audio_duration:.3f}s]"
 
         yield "oai_type", self.oai_type
         yield "transcript", self.transcript
