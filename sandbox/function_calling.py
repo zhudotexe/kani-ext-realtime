@@ -1,5 +1,5 @@
-import asyncio
 import json
+import logging
 from typing import Annotated
 
 import d20
@@ -7,8 +7,7 @@ import httpx
 import rich
 from easyaudiostream import list_mics
 from kani import AIParam, ai_function
-from kani.ext.realtime import OpenAIRealtimeKani
-from kani.ext.realtime.cli import chat_in_terminal_audio_async
+from kani.ext.realtime import OpenAIRealtimeKani, chat_in_terminal_audio
 
 
 class MyRealtimeKani(OpenAIRealtimeKani):
@@ -53,10 +52,9 @@ class MyRealtimeKani(OpenAIRealtimeKani):
         return d20.roll(dice).result
 
 
-async def test(mic_id):
+def test(mic_id):
     ai = MyRealtimeKani()
-    await ai.connect(voice="ballad")
-    await chat_in_terminal_audio_async(ai, mode="full_duplex", mic_id=mic_id, verbose=True)
+    chat_in_terminal_audio(ai, mode="full_duplex", mic_id=mic_id, verbose=True, voice="ballad")
     rich.print(ai.chat_history)
 
 
@@ -64,4 +62,4 @@ if __name__ == "__main__":
     # logging.basicConfig(level=logging.DEBUG)
     list_mics()
     mid = int(input("Mic ID: "))
-    asyncio.run(test(mid))
+    test(mid)
