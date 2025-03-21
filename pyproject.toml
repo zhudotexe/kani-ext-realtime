@@ -34,7 +34,7 @@ audio = [
 ]
 
 all = [
-    "kani-ext-realtile[audio]",
+    "kani-ext-realtime[audio]",
     "pyaudio>=0.2.0,<1.0.0",
 ]
 
