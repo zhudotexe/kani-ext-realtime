@@ -117,7 +117,6 @@ class OpenAIRealtimeKani(Kani):
         )
         self.session = RealtimeSession(model=model, client=self.client)
         """The underlying state of the OpenAI Realtime API. Used for lower-level API operations."""
-        self.session.add_lifecycle_listener(self._on_session_lifecycle_change)
 
         Kani.__init__(
             self,
