@@ -60,6 +60,7 @@ class RealtimeSession:
         # ws
         self._conn: AsyncRealtimeConnection | None = None
         self.connection_state: ConnectionState = ConnectionState.DISCONNECTED
+        self.has_connected_once = False
         self._ws_connected: asyncio.Future | None = None
         self._session_created = asyncio.Event()
         self.listeners = []
@@ -88,9 +89,10 @@ class RealtimeSession:
 
     async def _set_connection_state(self, new_state: ConnectionState):
         log.debug(f"New connection state: {new_state}")
+        old_state = self.connection_state
         self.connection_state = new_state
         results = await asyncio.gather(
-            *(callback(new_state) for callback in self.lifecycle_listeners), return_exceptions=True
+            *(callback(old_state, new_state) for callback in self.lifecycle_listeners), return_exceptions=True
         )
         for r in results:
             if isinstance(r, BaseException):
@@ -141,10 +143,10 @@ class RealtimeSession:
         """Remove a listener added by :meth:`add_listener`."""
         self.listeners.remove(callback)
 
-    def add_lifecycle_listener(self, callback: Callable[[ConnectionState], Awaitable[Any]]):
+    def add_lifecycle_listener(self, callback: Callable[[ConnectionState, ConnectionState], Awaitable[Any]]):
         """
         Add a listener which is called for WS lifecycle changes.
-        The listener must be an asynchronous function that takes in the new connection state in a single argument.
+        The listener must be an asynchronous function that takes in the (old_state, new_state).
         """
         self.lifecycle_listeners.append(callback)
 
@@ -176,6 +178,7 @@ class RealtimeSession:
             await self._set_connection_state(ConnectionState.CONNECTING)
             async with self.client.beta.realtime.connect(model=self.model) as self._conn:
                 await self._set_connection_state(ConnectionState.CONNECTED)
+                self.has_connected_once = True
                 self._ws_connected.set_result(True)
                 async for event in self._conn:
                     # noinspection PyBroadException

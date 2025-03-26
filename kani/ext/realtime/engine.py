@@ -169,11 +169,6 @@ class OpenAIRealtimeKani(Kani):
             log.debug(f"Uploading conversation history item {idx} / {len(history_to_upload)}")
             await self.session.conversation_item_create_from_chat_message(msg)
 
-    async def _on_session_lifecycle_change(self, new_state: ConnectionState):
-        # back up the session chat history to local state when it terminates
-        if new_state == ConnectionState.DISCONNECTED or new_state == ConnectionState.TERMINATING:
-            self._chat_history = interop.chat_history_from_session_state(self.session)
-
     @property
     def is_connected(self):
         return (
@@ -194,7 +189,7 @@ class OpenAIRealtimeKani(Kani):
 
     @property
     def chat_history(self):
-        if not self.is_connected:
+        if not self.session.has_connected_once:
             return self._chat_history
         # read chat items from session, grouping by responses (model output group or user input)
         return interop.chat_history_from_session_state(self.session)
