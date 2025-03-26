@@ -193,11 +193,11 @@ class RealtimeSession:
                         # log any exceptions
                         for r in results:
                             if isinstance(r, BaseException):
-                                log.exception("Exception when handling WS event:", exc_info=r)
+                                log.exception("Exception in callback when handling WS event:", exc_info=r)
                     except NoPropagate:
                         continue
                     except websockets.ConnectionClosedError as e:
-                        log.error(f"WS connection closed unexpectedly: {e}")
+                        log.error(f"WS connection closed unexpectedly: {e}", exc_info=e)
                     except Exception:
                         log.exception("Exception when handling WS event:")
         except asyncio.CancelledError:
