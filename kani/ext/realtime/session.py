@@ -15,6 +15,7 @@ from typing_extensions import Unpack
 
 from . import interop
 from ._internal import create_id, create_task, get_server_event_handlers, server_event_handler
+from .errors import OpenAIRealtimeError
 
 if TYPE_CHECKING:
     from kani.models import ChatMessage
@@ -551,18 +552,3 @@ def merge_conversation_item_contents(
 
 class NoPropagate(Exception):
     """Do not send this event to other listeners -- it is a serverside behavioural error."""
-
-
-class OpenAIRealtimeError(Exception):
-    def __init__(
-        self, message: str, type: str, code: str | None = None, event_id: str | None = None, param: str | None = None
-    ):
-        self.msg = message
-        self.type = type
-        self.code = code
-        self.event_id = event_id
-        self.param = param
-
-    @classmethod
-    def from_ws_error(cls, err):
-        return cls(message=err.message, type=err.type, code=err.code, event_id=err.event_id, param=err.param)

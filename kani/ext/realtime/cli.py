@@ -6,7 +6,6 @@ import os
 import sys
 from typing import Literal, overload
 
-import openai.types.beta.realtime as oait
 from kani.kani import Kani
 from kani.models import ChatRole
 from kani.streaming import StreamManager
@@ -24,6 +23,8 @@ try:
     _has_easyaudiostream = True
 except ImportError:
     _has_easyaudiostream = False
+
+_break_sentinel = object()
 
 
 async def ainput(string: str) -> str:
@@ -105,9 +106,8 @@ if _has_easyaudiostream:
         try:
             with Live(manager.get_display_text(), auto_refresh=False, vertical_overflow="visible") as live:
                 rich.print("Listening for input from microphone...")
-                while True:
-                    live.update(manager.get_display_text(), refresh=True)
-                    await manager.has_new_display()
+                async for display_text in manager:
+                    live.update(display_text, refresh=True)
         except (asyncio.CancelledError, KeyboardInterrupt):
             return
         finally:
@@ -268,7 +268,7 @@ if _has_easyaudiostream:
 
             self.stream_tasks = set()
             self.stream_outputs = []
-            self._has_new_display_event = asyncio.Event()
+            self.output_queue = asyncio.Queue()  # queue of either strings to display or exceptions to raise
 
             self.main_task = None
 
@@ -280,16 +280,30 @@ if _has_easyaudiostream:
             if self.main_task is not None:
                 self.main_task.cancel()
 
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            val = await self.output_queue.get()
+            if val is _break_sentinel:
+                raise StopAsyncIteration
+            if isinstance(val, BaseException):
+                raise val
+            return val
+
         # ===== main =====
         async def _main_task(self):
             # bg task to handle getting stream info
-            async for stream in self.kani.full_duplex(self.audio_stream, audio_callback=play_raw_audio):
-                # for each message stream emitted by the model, spawn a task to handle it
-                idx = len(self.stream_outputs)
-                self.stream_outputs.append([])
-                task = asyncio.create_task(self._handle_one_stream_task(stream, idx))
-                self.stream_tasks.add(task)
-                task.add_done_callback(self.stream_tasks.discard)
+            try:
+                async for stream in self.kani.full_duplex(self.audio_stream, audio_callback=play_raw_audio):
+                    # for each message stream emitted by the model, spawn a task to handle it
+                    idx = len(self.stream_outputs)
+                    self.stream_outputs.append([])
+                    task = asyncio.create_task(self._handle_one_stream_task(stream, idx))
+                    self.stream_tasks.add(task)
+                    task.add_done_callback(self.stream_tasks.discard)
+            except Exception as e:
+                await self.output_queue.put(e)
 
         async def _handle_one_stream_task(self, stream: StreamManager, output_idx: int):
             output_buffer = self.stream_outputs[output_idx]
@@ -321,18 +335,13 @@ if _has_easyaudiostream:
                 output_buffer.clear()
                 output_buffer.append(format_width(msg.text, width=self.width, prefix="USER: "))
 
-            self._has_new_display_event.set()
+            await self.output_queue.put(self.get_display_text())
 
         def get_display_text(self):
             import rich.markup
 
             text = "\n".join("".join(part for part in output) for output in self.stream_outputs)
             return rich.markup.escape(text)
-
-        async def has_new_display(self):
-            """Wait until there is new display text."""
-            await self._has_new_display_event.wait()
-            self._has_new_display_event.clear()
 
 else:
 

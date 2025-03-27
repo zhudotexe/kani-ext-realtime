@@ -18,7 +18,7 @@ from openai import AsyncOpenAI as OpenAIClient
 from openai.types.beta.realtime.response_create_event_param import Response as ResponseCreateParams
 from typing_extensions import Unpack
 
-from . import interop
+from . import errors, interop
 from ._internal import ensure_async
 from .session import ConnectionState, RealtimeSession
 
@@ -236,6 +236,7 @@ class OpenAIRealtimeKani(Kani):
         response: oait.ResponseDoneEvent = await self.session.wait_for(
             "response.done", lambda e: e.response.id == response_created_data.response.id, timeout=self.response_timeout
         )
+        errors.raise_for_response_failure(response.response.status_details)
         message = interop.response_to_chat_message(response.response)
         return Completion(
             message=message,
@@ -295,6 +296,7 @@ class OpenAIRealtimeKani(Kani):
                 case oait.ResponseAudioDeltaEvent(response_id=response_created_data.response.id, delta=audio_b64):
                     await audio_callback(base64.b64decode(audio_b64))
                 case oait.ResponseDoneEvent(response=response):
+                    errors.raise_for_response_failure(response.status_details)
                     message = interop.response_to_chat_message(response)
                     completion = Completion(
                         message=message,
@@ -451,7 +453,7 @@ class OpenAIRealtimeKani(Kani):
         break_sentinel = object()
         # streamer for item with given ID reads elements from their q, stored here
         streamer_queues = collections.defaultdict(asyncio.Queue)
-        yielder_q = asyncio.Queue()  # streamers to yield
+        yielder_q = asyncio.Queue()  # streamers to yield or exceptions to raise
 
         # helper for yielding
         async def yield_from_queue(q: asyncio.Queue):
@@ -465,6 +467,11 @@ class OpenAIRealtimeKani(Kani):
         async def listener(e):
             """On event from server, route the event to the right streamer or yield a new streamer"""
             match e:
+                # ===== error =====
+                case BaseException():
+                    await yielder_q.put(e)
+                case oait.ErrorEvent(error=err) if err is not None:
+                    await yielder_q.put(errors.OpenAIRealtimeError.from_ws_error(err))
                 # ===== new conversation item =====
                 # we only care about messages here - function calls are handled elsewhere
                 case oait.ConversationItemCreatedEvent(
@@ -472,13 +479,18 @@ class OpenAIRealtimeKani(Kani):
                 ):
                     streamer_q = streamer_queues[item_id]
                     await yielder_q.put(StreamManager(yield_from_queue(streamer_q), role=ChatRole(role)))
-                # ===== streaming items (asst) =====
-                case oait.ResponseTextDeltaEvent(item_id=item_id, delta=text) | oait.ResponseAudioTranscriptDeltaEvent(
-                    item_id=item_id, delta=text
+                # ===== streaming items (asst, user) =====
+                case (
+                    oait.ResponseTextDeltaEvent(item_id=item_id, delta=text)
+                    | oait.ResponseAudioTranscriptDeltaEvent(item_id=item_id, delta=text)
+                    | oait.ConversationItemInputAudioTranscriptionDeltaEvent(item_id=item_id, delta=text)
                 ):
                     await streamer_queues[item_id].put(text)
                 case oait.ResponseDoneEvent(response=response):
                     if response.status == "cancelled" and not response.output:
+                        return
+                    if exc := errors.exc_for_response_failure(response.status_details):
+                        await yielder_q.put(exc)
                         return
                     message = interop.response_to_chat_message(response)
                     completion = Completion(
@@ -493,9 +505,8 @@ class OpenAIRealtimeKani(Kani):
                         await q.put(break_sentinel)
                         streamer_queues.pop(item_id)
                 # ===== streaming items (user) =====
-                case oait.ConversationItemInputAudioTranscriptionCompletedEvent(item_id=item_id, transcript=text):
-                    await streamer_queues[item_id].put(text.strip())
-                    # emit a completion too
+                case oait.ConversationItemInputAudioTranscriptionCompletedEvent(item_id=item_id):
+                    # emit the completion
                     item = self.session.conversation_items.get(item_id)
                     assert item.type == "message"
                     role = ChatRole(item.role)
@@ -536,11 +547,13 @@ class OpenAIRealtimeKani(Kani):
             await yielder_q.put(break_sentinel)
 
         # add the listener, start the task to fwd audio frames, and start emitting
-        self.session.add_listener(listener)
+        self.session.add_listener(listener, return_exceptions=True)
         audio_task = asyncio.create_task(audio_sender_task())
         try:
-            async for stream_manager in yield_from_queue(yielder_q):
-                yield stream_manager
+            async for thing in yield_from_queue(yielder_q):
+                if isinstance(thing, BaseException):  # oopsie
+                    raise thing
+                yield thing  # a stream manager
         finally:
             audio_task.cancel()
             self.session.remove_listener(listener)
