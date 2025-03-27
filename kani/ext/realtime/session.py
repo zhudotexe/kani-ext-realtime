@@ -196,14 +196,14 @@ class RealtimeSession:
                                 log.exception("Exception in callback when handling WS event:", exc_info=r)
                     except NoPropagate:
                         continue
-                    except websockets.ConnectionClosedError as e:
-                        log.error(f"WS connection closed unexpectedly: {e}", exc_info=e)
                     except Exception:
                         log.exception("Exception when handling WS event:")
         except asyncio.CancelledError:
             # the ws loop was cancelled explicitly, so we are shutting down
             is_terminating = True
             raise
+        except websockets.ConnectionClosedError as e:
+            log.error(f"WS connection closed unexpectedly: {e}", exc_info=e)
         except Exception as e:
             log.exception("Exception when connecting to the websocket:")
             self._ws_connected.set_exception(e)
