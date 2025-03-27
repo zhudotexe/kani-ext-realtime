@@ -185,6 +185,12 @@ class RealtimeSession:
 
         If *return_exceptions* is True, the callback will also be called with any exceptions raised in the WS loop
         (usually disconnects).
+
+        .. warning::
+            All listeners for a WS event must finish before the loop will process additional WS events!
+            This means that if your listener attempts to wait for another event, it will cause problems and deadlock the
+            WS loop.
+            To fix this, fire off a background task and have the listener return fast.
         """
         if not return_exceptions:
 

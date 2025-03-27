@@ -12,14 +12,14 @@ import openai.types.beta.realtime as oait
 from kani import AIFunction, ChatMessage, ExceptionHandleResult, Kani, ToolCall
 from kani.engines.base import BaseCompletion, BaseEngine, Completion
 from kani.exceptions import FunctionCallException
-from kani.models import ChatRole, FunctionCall, QueryType
+from kani.models import ChatRole, QueryType
 from kani.streaming import DummyStream, StreamManager
 from openai import AsyncOpenAI as OpenAIClient
 from openai.types.beta.realtime.response_create_event_param import Response as ResponseCreateParams
 from typing_extensions import Unpack
 
 from . import errors, interop
-from ._internal import ensure_async
+from ._internal import create_task, ensure_async
 from .session import ConnectionState, RealtimeSession
 
 log = logging.getLogger(__name__)
@@ -479,13 +479,30 @@ class OpenAIRealtimeKani(Kani):
                 ):
                     streamer_q = streamer_queues[item_id]
                     await yielder_q.put(StreamManager(yield_from_queue(streamer_q), role=ChatRole(role)))
-                # ===== streaming items (asst, user) =====
+                # ===== streaming tokens =====
                 case (
                     oait.ResponseTextDeltaEvent(item_id=item_id, delta=text)
                     | oait.ResponseAudioTranscriptDeltaEvent(item_id=item_id, delta=text)
                     | oait.ConversationItemInputAudioTranscriptionDeltaEvent(item_id=item_id, delta=text)
                 ):
                     await streamer_queues[item_id].put(text)
+                # ===== streaming audio =====
+                case oait.ResponseAudioDeltaEvent(delta=audio_b64):
+                    await audio_callback(base64.b64decode(audio_b64))
+                # ===== transcription complete  =====
+                case oait.ConversationItemInputAudioTranscriptionCompletedEvent(item_id=item_id):
+                    # emit the completion
+                    item = self.session.conversation_items.get(item_id)
+                    assert item.type == "message"
+                    role = ChatRole(item.role)
+                    content = list(map(interop.content_part_to_message_part, item.content))
+                    message = ChatMessage(role=role, content=content)
+                    await self.add_to_history(message)
+                    completion = Completion(message=message, prompt_tokens=0, completion_tokens=0)
+                    await streamer_queues[item_id].put(completion)
+                    await streamer_queues[item_id].put(break_sentinel)
+                    streamer_queues.pop(item_id)
+                # ===== response complete =====
                 case oait.ResponseDoneEvent(response=response):
                     if response.status == "cancelled" and not response.output:
                         return
@@ -504,40 +521,21 @@ class OpenAIRealtimeKani(Kani):
                         await q.put(completion)
                         await q.put(break_sentinel)
                         streamer_queues.pop(item_id)
-                # ===== streaming items (user) =====
-                case oait.ConversationItemInputAudioTranscriptionCompletedEvent(item_id=item_id):
-                    # emit the completion
-                    item = self.session.conversation_items.get(item_id)
-                    assert item.type == "message"
-                    role = ChatRole(item.role)
-                    content = list(map(interop.content_part_to_message_part, item.content))
-                    message = ChatMessage(role=role, content=content)
-                    await self.add_to_history(message)
-                    completion = Completion(message=message, prompt_tokens=0, completion_tokens=0)
-                    await streamer_queues[item_id].put(completion)
-                    await streamer_queues[item_id].put(break_sentinel)
-                    streamer_queues.pop(item_id)
-                # ===== audio =====
-                case oait.ResponseAudioDeltaEvent(delta=audio_b64):
-                    await audio_callback(base64.b64decode(audio_b64))
-                # ===== function calling =====
-                case oait.ResponseOutputItemDoneEvent(
-                    item=oait.ConversationItem(
-                        type="function_call", status="completed", call_id=call_id, name=name, arguments=args
-                    )
-                ):
-                    tc = ToolCall.from_function_call(FunctionCall(name=name, arguments=args), call_id)
-                    # emit a dummystream with the function call
-                    tc_message = ChatMessage.assistant(content=None, tool_calls=[tc])
-                    await yielder_q.put(DummyStream(tc_message))
-                    # actually call it and req a new completion with data
-                    result = await self._do_tool_call(tc, 0)
-                    # save the result to the chat history
-                    await self.add_to_history(result.message)
-                    await self.session.conversation_item_create_from_chat_message(result.message)
-                    await yielder_q.put(DummyStream(result.message))
-                    # request a new completion
-                    await self.session.response_create()
+
+                    # do function calling in a task to prevent blocking the WS loop
+                    if not message.tool_calls:
+                        return
+
+                    async def _fc_task():
+                        results = await asyncio.gather(*(self._do_tool_call(tc, 0) for tc in message.tool_calls))
+                        for result in results:
+                            # save the result to the chat history
+                            await self.add_to_history(result.message)
+                            await self.session.conversation_item_create_from_chat_message(result.message)
+                            await yielder_q.put(DummyStream(result.message))
+                        await self.session.response_create()
+
+                    create_task(_fc_task())
 
         # audio sender
         async def audio_sender_task():
