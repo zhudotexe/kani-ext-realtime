@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import enum
+import functools
 import itertools
 import logging
 from typing import Any, Awaitable, Callable, TYPE_CHECKING
@@ -32,16 +33,18 @@ class ConnectionState(enum.Enum):
 class RealtimeSession:
     """This is an internal object used to manage the state of the OpenAI Realtime session."""
 
-    def __init__(self, model: str, client: AsyncOpenAI, *, save_audio=True):
+    def __init__(self, model: str, client: AsyncOpenAI, *, save_audio=True, retry_attempts: int = 5):
         """
         :param model: The id of the realtime model to use.
         :param client: The OpenAI client to use.
         :param save_audio: Whether to keep audio data in memory.
+        :param retry_attempts: The number of times to retry failed WS events.
         """
         # client config
         self.model = model
         self.client = client
         self.save_audio = save_audio
+        self.retry_attempts = retry_attempts
 
         # audio buffer
         self.input_audio_buffer = bytearray()
@@ -63,7 +66,7 @@ class RealtimeSession:
         self.has_connected_once = False
         self._ws_connected: asyncio.Future | None = None
         self._session_created = asyncio.Event()
-        self.listeners = []
+        self.listeners = dict()
         self.lifecycle_listeners = []
         self.ws_task = None
 
@@ -108,7 +111,43 @@ class RealtimeSession:
         log.debug(f">>> {event!r}")
         await self._conn.send(event)
 
+    async def send_with_retry(
+        self,
+        event: RealtimeClientEvent,
+        ack_event_type: str,
+        ack_event_predicate: Callable[[RealtimeServerEvent], bool] = lambda _: True,
+        timeout: float = 60,
+    ):
+        """
+        Send a client event to the websocket and wait for its ACKing response.
+
+        If an causal error message or exception occurs or the ACK is not received by the timeout, try up to *attempts*
+        times.
+        Returns the ACKing response.
+        """
+        event.event_id = create_id("event")
+        for attempt in range(self.retry_attempts):
+            try:
+                await self.send(event)
+                return await self.wait_for(
+                    ack_event_type, ack_event_predicate, timeout=timeout, raise_for=event.event_id
+                )
+            except Exception as e:
+                if attempt + 1 == self.retry_attempts:
+                    raise
+                sleep_for = 2**attempt
+                log.warning(
+                    f"Exception in send_with_retry waiting for {ack_event_type} (attempt {attempt + 1} of"
+                    f" {self.retry_attempts}), sleeping for {sleep_for} sec and retrying...",
+                    exc_info=e,
+                )
+                await asyncio.sleep(sleep_for)
+
     # ---- high level iface ----
+    async def session_update(self, session_config: oait.SessionCreateParams):
+        event = oait.SessionUpdateEvent.model_validate({"type": "session.update", "session": session_config})
+        return await self.send_with_retry(event, ack_event_type="session.updated")
+
     async def input_audio_buffer_append(self, frame: bytes):
         if self.save_audio:
             self.input_audio_buffer.extend(frame)
@@ -119,29 +158,48 @@ class RealtimeSession:
         for item in interop.chat_message_to_conv_items(message):
             item_id = create_id("item")
             item.id = item_id
-            await self.send(oait.ConversationItemCreateEvent(type="conversation.item.create", item=item))
+            event = oait.ConversationItemCreateEvent(type="conversation.item.create", item=item)
             # wait for confirmation and add audio bytes if we're logging
-            created_event = await self.wait_for("conversation.item.created", lambda e: e.item.id == item_id)
+            created_event = await self.send_with_retry(
+                event=event,
+                ack_event_type="conversation.item.created",
+                ack_event_predicate=lambda e: e.item.id == item_id,
+            )
             if self.save_audio:
                 created_item = created_event.item
                 self.conversation_items[created_item.id] = merge_conversation_items(created_item, item)
 
-    async def response_create(self, **generation_kwargs: Unpack["ResponseCreateParams"]):
-        await self.send(
-            oait.ResponseCreateEvent.model_validate({"type": "response.create", "response": generation_kwargs})
-        )
+    async def response_create(self, **generation_kwargs: Unpack["ResponseCreateParams"]) -> oait.ResponseCreatedEvent:
+        if generation_kwargs:
+            event = oait.ResponseCreateEvent.model_validate({"type": "response.create", "response": generation_kwargs})
+        else:
+            event = oait.ResponseCreateEvent.model_validate({"type": "response.create"})
+        return await self.send_with_retry(event=event, ack_event_type="response.created")
 
     # ==== events ====
-    def add_listener(self, callback: Callable[[RealtimeServerEvent], Awaitable[Any]]):
+    def add_listener(self, callback: Callable[[RealtimeServerEvent], Awaitable[Any]], return_exceptions=False):
         """
         Add a listener which is called for every event received from the WS.
         The listener must be an asynchronous function that takes in an event in a single argument.
+
+        If *return_exceptions* is True, the callback will also be called with any exceptions raised in the WS loop
+        (usually disconnects).
         """
-        self.listeners.append(callback)
+        if not return_exceptions:
+
+            @functools.wraps(callback)
+            def wrapped(e):
+                if isinstance(e, BaseException):
+                    return
+                return callback(e)
+
+            self.listeners[callback] = wrapped
+        else:
+            self.listeners[callback] = callback
 
     def remove_listener(self, callback):
         """Remove a listener added by :meth:`add_listener`."""
-        self.listeners.remove(callback)
+        self.listeners.pop(callback)
 
     def add_lifecycle_listener(self, callback: Callable[[ConnectionState, ConnectionState], Awaitable[Any]]):
         """
@@ -155,24 +213,84 @@ class RealtimeSession:
         self.lifecycle_listeners.remove(callback)
 
     async def wait_for(
-        self, event_type: str, predicate: Callable[[RealtimeServerEvent], bool] = None, timeout: int = 60
+        self,
+        event_type: str,
+        predicate: Callable[[RealtimeServerEvent], bool] = None,
+        timeout: float = 60,
+        raise_for: str | bool = None,
     ) -> RealtimeServerEvent:
-        """Wait for the next event of a given type, and return it."""
+        """
+        Wait for the next event of a given type, and return it.
+
+        :param raise_for: If given and an Error event is seen caused by this event ID, raise it. If True, raise for any
+            Error event.
+        """
         future = asyncio.get_running_loop().create_future()
 
-        async def waiter(e: RealtimeServerEvent):
-            if e.type == event_type:
-                if predicate is None or predicate(e):
-                    future.set_result(e)
+        async def waiter(e: RealtimeServerEvent | BaseException):
+            if isinstance(e, BaseException):
+                future.set_exception(e)
+            elif e.type == event_type and (predicate is None or predicate(e)):
+                future.set_result(e)
+            # raise an applicable Error
+            elif isinstance(e, oait.ErrorEvent) and (raise_for is True or e.error.event_id == raise_for):
+                err = OpenAIRealtimeError.from_ws_error(e.error)
+                future.set_exception(err)
 
         try:
-            self.add_listener(waiter)
+            self.add_listener(waiter, return_exceptions=True)
             return await asyncio.wait_for(future, timeout)
         finally:
             self.remove_listener(waiter)
 
+    async def listen_until(
+        self,
+        event_type: str,
+        predicate: Callable[[RealtimeServerEvent], bool] = None,
+        inclusive=True,
+        timeout: float = 600,
+    ):
+        """
+        Yield all server events until the next event of a given type, waiting up to *timeout*.
+
+        If an exception happens, raise it.
+        """
+        break_sentinel = object()
+        q = asyncio.Queue()
+
+        async def listener(e: RealtimeServerEvent | BaseException):
+            if e.type == event_type and (predicate is None or predicate(e)):
+                if inclusive:
+                    await q.put(e)
+                await q.put(break_sentinel)
+            else:
+                await q.put(e)
+
+        self.add_listener(listener, return_exceptions=True)
+        try:
+            async with asyncio.timeout(timeout):
+                while True:
+                    item = await q.get()
+                    if item is break_sentinel:
+                        break
+                    if isinstance(item, BaseException):
+                        raise item
+                    yield item
+        finally:
+            self.remove_listener(listener)
+
     async def _ws_task(self):
         """Main websocket receive loop."""
+
+        async def _call_listeners(data):
+            results = await asyncio.gather(
+                *(callback(data) for callback in self.listeners.values()), return_exceptions=True
+            )
+            # log any exceptions
+            for r in results:
+                if isinstance(r, BaseException):
+                    log.exception("Exception in callback when handling WS event:", exc_info=r)
+
         is_terminating = False
         try:
             await self._set_connection_state(ConnectionState.CONNECTING)
@@ -187,26 +305,23 @@ class RealtimeSession:
                         # process our event first, always
                         await self._handle_server_event(event)
                         # get listeners, call them - listeners can use the result of the processing if needed
-                        results = await asyncio.gather(
-                            *(callback(event) for callback in self.listeners), return_exceptions=True
-                        )
-                        # log any exceptions
-                        for r in results:
-                            if isinstance(r, BaseException):
-                                log.exception("Exception in callback when handling WS event:", exc_info=r)
+                        await _call_listeners(event)
                     except NoPropagate:
                         continue
-                    except Exception:
+                    except Exception as e:
                         log.exception("Exception when handling WS event:")
+                        await _call_listeners(e)
         except asyncio.CancelledError:
             # the ws loop was cancelled explicitly, so we are shutting down
             is_terminating = True
             raise
         except websockets.ConnectionClosedError as e:
             log.error(f"WS connection closed unexpectedly: {e}", exc_info=e)
+            await _call_listeners(e)
         except Exception as e:
             log.exception("Exception when connecting to the websocket:")
             self._ws_connected.set_exception(e)
+            await _call_listeners(e)
             raise
         finally:
             self._conn = None
@@ -436,3 +551,18 @@ def merge_conversation_item_contents(
 
 class NoPropagate(Exception):
     """Do not send this event to other listeners -- it is a serverside behavioural error."""
+
+
+class OpenAIRealtimeError(Exception):
+    def __init__(
+        self, message: str, type: str, code: str | None = None, event_id: str | None = None, param: str | None = None
+    ):
+        self.msg = message
+        self.type = type
+        self.code = code
+        self.event_id = event_id
+        self.param = param
+
+    @classmethod
+    def from_ws_error(cls, err):
+        return cls(message=err.message, type=err.type, code=err.code, event_id=err.event_id, param=err.param)

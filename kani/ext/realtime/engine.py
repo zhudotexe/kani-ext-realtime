@@ -107,6 +107,8 @@ class OpenAIRealtimeKani(Kani):
         self._always_included_messages = always_included_messages
         self._chat_history = chat_history
         self.generation_args = generation_args
+        self.response_timeout = 600
+        self.retry_attempts = retry
 
         self.client = client or OpenAIClient(
             api_key=api_key,
@@ -115,7 +117,7 @@ class OpenAIRealtimeKani(Kani):
             websocket_base_url=ws_base,
             default_headers=headers,
         )
-        self.session = RealtimeSession(model=model, client=self.client)
+        self.session = RealtimeSession(model=model, client=self.client, retry_attempts=retry)
         """The underlying state of the OpenAI Realtime API. Used for lower-level API operations."""
 
         Kani.__init__(
@@ -148,10 +150,7 @@ class OpenAIRealtimeKani(Kani):
         session_config["tools"] = list(itertools.chain(session_config.get("tools", []), tool_defs))
 
         # send session config over WS
-        await self.session.send(
-            oait.SessionUpdateEvent.model_validate({"type": "session.update", "session": session_config})
-        )
-        await self.session.wait_for("session.updated")
+        await self.session.session_update(session_config)
 
         # send chat history over ws
         history_to_upload = []
@@ -212,14 +211,30 @@ class OpenAIRealtimeKani(Kani):
     async def get_model_completion(
         self, include_functions: bool = True, **kwargs: Unpack[ResponseCreateParams]
     ) -> Completion:
+        for retry_idx in range(self.retry_attempts):
+            try:
+                return await self._get_model_completion(include_functions, **kwargs)
+            except Exception as e:
+                if retry_idx + 1 == self.retry_attempts:
+                    raise
+                sleep_for = 2**retry_idx
+                log.warning(
+                    f"Got exception in get_model_completion (attempt {retry_idx + 1} of {self.retry_attempts}),"
+                    f" sleeping for {sleep_for} sec and retrying...",
+                    exc_info=e,
+                )
+                await asyncio.sleep(sleep_for)
+
+    async def _get_model_completion(
+        self, include_functions: bool = True, **kwargs: Unpack[ResponseCreateParams]
+    ) -> Completion:
         """Request a completion now and return it."""
         if not include_functions:
             kwargs["tool_choice"] = "none"
         generation_kwargs = self.generation_args | kwargs
-        await self.session.response_create(**generation_kwargs)
-        response_created_data: oait.ResponseCreatedEvent = await self.session.wait_for("response.created")
+        response_created_data = await self.session.response_create(**generation_kwargs)
         response: oait.ResponseDoneEvent = await self.session.wait_for(
-            "response.done", lambda e: e.response.id == response_created_data.response.id
+            "response.done", lambda e: e.response.id == response_created_data.response.id, timeout=self.response_timeout
         )
         message = interop.response_to_chat_message(response.response)
         return Completion(
@@ -234,6 +249,27 @@ class OpenAIRealtimeKani(Kani):
         audio_callback: Callable[[bytes], Any] = None,
         **kwargs: Unpack[ResponseCreateParams],
     ) -> AsyncIterable[str | BaseCompletion]:
+        for retry_idx in range(self.retry_attempts):
+            try:
+                async for item in self._get_model_stream(include_functions, audio_callback, **kwargs):
+                    yield item
+            except Exception as e:
+                if retry_idx + 1 == self.retry_attempts:
+                    raise
+                sleep_for = 2**retry_idx
+                log.warning(
+                    f"Got exception in get_model_stream (attempt {retry_idx + 1} of {self.retry_attempts}),"
+                    f" sleeping for {sleep_for} sec and retrying...",
+                    exc_info=e,
+                )
+                await asyncio.sleep(sleep_for)
+
+    async def _get_model_stream(
+        self,
+        include_functions: bool = True,
+        audio_callback: Callable[[bytes], Any] = None,
+        **kwargs: Unpack[ResponseCreateParams],
+    ) -> AsyncIterable[str | BaseCompletion]:
         """
         Request a completion and stream from the model until the next response.done event. Only yield events from this
         completion.
@@ -243,43 +279,29 @@ class OpenAIRealtimeKani(Kani):
         audio_callback = ensure_async(audio_callback)
         generation_kwargs = self.generation_args | kwargs
 
-        await self.session.response_create(**generation_kwargs)
-        response_created_data: oait.ResponseCreatedEvent = await self.session.wait_for("response.created")
+        response_created_data = await self.session.response_create(**generation_kwargs)
 
-        break_sentinel = object()
-        completion = None
-        q = asyncio.Queue()
-
-        async def listener(e):
-            match e:
+        async for ws_event in self.session.listen_until(
+            "response.done",
+            lambda e: e.response.id == response_created_data.response.id,
+            inclusive=True,
+            timeout=self.response_timeout,
+        ):
+            match ws_event:
                 case oait.ResponseTextDeltaEvent(response_id=response_created_data.response.id, delta=text):
-                    await q.put(text)
+                    yield text
                 case oait.ResponseAudioTranscriptDeltaEvent(response_id=response_created_data.response.id, delta=text):
-                    await q.put(text)
+                    yield text
                 case oait.ResponseAudioDeltaEvent(response_id=response_created_data.response.id, delta=audio_b64):
                     await audio_callback(base64.b64decode(audio_b64))
                 case oait.ResponseDoneEvent(response=response):
                     message = interop.response_to_chat_message(response)
-                    nonlocal completion
                     completion = Completion(
                         message=message,
                         prompt_tokens=response.usage.input_tokens,
                         completion_tokens=response.usage.output_tokens,
                     )
-                    await q.put(break_sentinel)
-
-        self.session.add_listener(listener)
-        try:
-            while True:
-                item = await q.get()
-                if item is break_sentinel:
-                    log.debug("Got break sentinel, yielding completion")
-                    break
-                yield item
-        finally:
-            self.session.remove_listener(listener)
-            if completion:
-                yield completion
+                    yield completion
 
     async def _full_round(self, query: QueryType, *, max_function_rounds: int, _kani_is_stream: bool, **kwargs):
         """Underlying handler for full_round with stream support."""

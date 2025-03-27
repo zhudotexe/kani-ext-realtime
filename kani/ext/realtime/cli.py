@@ -99,7 +99,7 @@ if _has_easyaudiostream:
 
         # request an initial completion if we want it
         if ai_first:
-            await kani.session.send(oait.ResponseCreateEvent(type="response.create"))
+            await kani.session.response_create()
 
         # then show the live data forever
         try:
