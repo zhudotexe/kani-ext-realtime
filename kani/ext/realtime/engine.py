@@ -82,7 +82,7 @@ class OpenAIRealtimeKani(Kani):
                 any ``chat_history`` and *will* be included in the ``chat_history`` attribute.
         :param organization: The OpenAI organization to use in requests. By default, the org ID would be read from the
             `OPENAI_ORG_ID` environment variable (defaults to the API key's default org if not set).
-        :param retry: How many times the engine should retry failed HTTP calls with exponential backoff (default 5).
+        :param retry: How many times the engine should retry failed WS calls with exponential backoff (default 5).
         :param ws_base: The base WebSocket URL to connect to (default "wss://api.openai.com/v1/realtime").
         :param headers: A dict of HTTP headers to include with each request.
         :param client: An instance of `openai.AsyncOpenAI <https://github.com/openai/openai-python>`_
@@ -108,7 +108,7 @@ class OpenAIRealtimeKani(Kani):
         self._chat_history = chat_history
         self.generation_args = generation_args
         self.response_timeout = 600
-        self.retry_attempts = retry
+        self.ws_retry_attempts = retry
 
         self.client = client or OpenAIClient(
             api_key=api_key,
@@ -211,15 +211,15 @@ class OpenAIRealtimeKani(Kani):
     async def get_model_completion(
         self, include_functions: bool = True, **kwargs: Unpack[ResponseCreateParams]
     ) -> Completion:
-        for retry_idx in range(self.retry_attempts):
+        for retry_idx in range(self.ws_retry_attempts):
             try:
                 return await self._get_model_completion(include_functions, **kwargs)
             except Exception as e:
-                if retry_idx + 1 == self.retry_attempts:
+                if retry_idx + 1 == self.ws_retry_attempts:
                     raise
                 sleep_for = 2**retry_idx
                 log.warning(
-                    f"Got exception in get_model_completion (attempt {retry_idx + 1} of {self.retry_attempts}),"
+                    f"Got exception in get_model_completion (attempt {retry_idx + 1} of {self.ws_retry_attempts}),"
                     f" sleeping for {sleep_for} sec and retrying...",
                     exc_info=e,
                 )
@@ -250,20 +250,22 @@ class OpenAIRealtimeKani(Kani):
         audio_callback: Callable[[bytes], Any] = None,
         **kwargs: Unpack[ResponseCreateParams],
     ) -> AsyncIterable[str | BaseCompletion]:
-        for retry_idx in range(self.retry_attempts):
+        for retry_idx in range(self.ws_retry_attempts):
             try:
                 async for item in self._get_model_stream(include_functions, audio_callback, **kwargs):
                     yield item
             except Exception as e:
-                if retry_idx + 1 == self.retry_attempts:
+                if retry_idx + 1 == self.ws_retry_attempts:
                     raise
                 sleep_for = 2**retry_idx
                 log.warning(
-                    f"Got exception in get_model_stream (attempt {retry_idx + 1} of {self.retry_attempts}),"
+                    f"Got exception in get_model_stream (attempt {retry_idx + 1} of {self.ws_retry_attempts}),"
                     f" sleeping for {sleep_for} sec and retrying...",
                     exc_info=e,
                 )
                 await asyncio.sleep(sleep_for)
+            else:
+                break
 
     async def _get_model_stream(
         self,
