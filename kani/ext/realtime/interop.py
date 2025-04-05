@@ -85,8 +85,8 @@ def conv_items_to_chat_message(conv_items: list[oait.ConversationItem]) -> ChatM
                 out_kwargs["tool_call_id"] = call_id
                 out_content.append(output)
             case oait.ConversationItem(type="message", role=role, content=content):
-                if out_role is not None and out_role != role:
-                    raise ValueError(f"Got 2 different message roles in response: {out_role}, {role}")
+                if out_role is not None and out_role.value != role:
+                    raise ValueError(f"Got 2 different message roles in response: {out_role.value}, {role}")
                 out_role = ChatRole(role)
                 out_content.extend(map(content_part_to_message_part, content))
             case other:
