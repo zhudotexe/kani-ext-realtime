@@ -80,6 +80,7 @@ def create_task(coro):
     task = asyncio.create_task(coro)
     _global_bg_tasks.add(task)
     task.add_done_callback(_global_bg_tasks.discard)
+    return task
 
 
 def create_id(prefix: str = ""):
